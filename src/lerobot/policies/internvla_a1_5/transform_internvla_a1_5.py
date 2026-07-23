@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -62,7 +63,9 @@ class InternVLAA15ChatProcessorTransformFn(DataTransformFn):
       - NONE: no supervision
     """
 
-    pretrained_model_name_or_path: str = "Qwen/Qwen3.5-2B"
+    pretrained_model_name_or_path: str = os.environ.get(
+        "INTERNVLA_VLM_PATH", "Qwen/Qwen3.5-2B"
+    )
     max_length: int = 650
     task_key: str = "task"
     language_memory_key: str = "language_memory"
@@ -267,7 +270,9 @@ class InternVLAA15ChatProcessorTransformFn(DataTransformFn):
 class InternVLAA15VQAProcessorTransformFn(DataTransformFn):
     """VQA processor used by InternVLA-A1.5 mixed robot/VQA training."""
 
-    pretrained_model_name_or_path: str = "Qwen/Qwen3.5-2B"
+    pretrained_model_name_or_path: str = os.environ.get(
+        "INTERNVLA_VLM_PATH", "Qwen/Qwen3.5-2B"
+    )
     max_length: int = 650
     num_views: int = 3
     truncation: bool = True
@@ -367,8 +372,12 @@ class InternVLAA15VQAProcessorTransformFn(DataTransformFn):
 @dataclass
 class FASTInternVLAA15ActionTokenizerTransformFn(DataTransformFn):
     
-    action_tokenizer_name: str = "physical-intelligence/fast"
-    qwen35_model_name: str = "Qwen/Qwen3.5-2B"
+    action_tokenizer_name: str = os.environ.get(
+        "INTERNVLA_FAST_TOKENIZER_PATH", "physical-intelligence/fast"
+    )
+    qwen35_model_name: str = os.environ.get(
+        "INTERNVLA_VLM_PATH", "Qwen/Qwen3.5-2B"
+    )
     max_action_tokens: int = 256
     chunk_size: int = 50
     max_action_dim: int = 32

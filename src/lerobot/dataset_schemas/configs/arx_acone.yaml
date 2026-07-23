@@ -1,0 +1,34 @@
+# ARX AC One dual-arm robot (local LeRobot v3 naming).
+#
+# The dataset uses the same feature layout as the built-in "ARX AC One"
+# schema, but stores robot_type as "arx_acone". Keep this alias explicit
+# because schema lookup is case-sensitive.
+robot_type: arx_acone
+action_mask_spec: [6, -1, 6, -1]
+action_reorder:
+  - [0, 6, 0, 6]
+  - [6, 7, 7, 8]
+  - [7, 13, 8, 14]
+  - [13, 14, 15, 16]
+state_reorder:
+  - [0, 6, 0, 6]
+  - [6, 7, 7, 8]
+  - [7, 13, 8, 14]
+  - [13, 14, 15, 16]
+feature_mapping:
+  observation.state:
+    - states.left_joint.position
+    - states.left_gripper.position
+    - states.right_joint.position
+    - states.right_gripper.position
+  action:
+    - actions.left_joint.position
+    - actions.left_gripper.position
+    - actions.right_joint.position
+    - actions.right_gripper.position
+image_mapping:
+  images.rgb.head: observation.images.image0
+  images.rgb.hand_left: observation.images.image1
+  images.rgb.hand_right: observation.images.image2
+action_mode: joint
+description: "ARX AC One dual-arm 6-DOF robot (arx_acone alias)"

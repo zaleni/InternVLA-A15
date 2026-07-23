@@ -88,12 +88,19 @@ def get_rank_and_world_size() -> tuple[int, int]:
         return dist.get_rank(), dist.get_world_size()
     return 0, 1
 
-def find_info_json_path_for_repo(cfg: TrainPipelineConfig, repo_id: str) -> Path | None:
-    if cfg.dataset.root is not None: 
-        root = Path(cfg.dataset.root)
-        return root / repo_id / "meta" / "info.json"
-    else:
-        return HF_LEROBOT_HOME / repo_id / "meta" / "info.json"
+def resolve_local_dataset_root(cfg: TrainPipelineConfig, repo_id: str) -> Path:
+    """Resolve either a direct dataset root or a parent containing repo_id."""
+    if cfg.dataset.root is None:
+        return HF_LEROBOT_HOME / repo_id
+
+    root = Path(cfg.dataset.root)
+    if (root / "meta" / "info.json").is_file():
+        return root
+    return root / repo_id
+
+
+def find_info_json_path_for_repo(cfg: TrainPipelineConfig, repo_id: str) -> Path:
+    return resolve_local_dataset_root(cfg, repo_id) / "meta" / "info.json"
 
 
 def parse_repo_ids(repo_ids_cfg: str | list[str] | tuple[str, ...]) -> list[str]:
@@ -343,18 +350,18 @@ def _build_single_dataset(
     """
 
     # Load metadata + determine delta timestamps
+    dataset_root = resolve_local_dataset_root(cfg, repo_id)
     ds_meta = LeRobotDatasetMetadata(
         repo_id,
-        root=cfg.dataset.root,
+        root=dataset_root,
         revision=cfg.dataset.revision,
     )
     delta_timestamps = resolve_delta_timestamps(cfg.policy, ds_meta)
 
     if cfg.dataset.streaming:
-        root = cfg.dataset.root if cfg.dataset.root is not None else HF_LEROBOT_HOME / repo_id
         base_ds = StreamingLeRobotDataset(
             repo_id=repo_id,
-            root=root,          
+            root=dataset_root,
             episodes=cfg.dataset.episodes,
             image_transforms=image_transforms,
             delta_timestamps=delta_timestamps,
@@ -376,7 +383,7 @@ def _build_single_dataset(
         # Create the actual LeRobot dataset (non-streaming recommended for multi-robot)
         base_ds = LeRobotDataset(
             repo_id,
-            root=cfg.dataset.root,
+            root=dataset_root,
             episodes=cfg.dataset.episodes,
             delta_timestamps=delta_timestamps,
             # tolerance_s=0.2, 

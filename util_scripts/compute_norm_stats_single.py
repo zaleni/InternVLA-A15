@@ -42,6 +42,13 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--root",
+        type=str,
+        default=None,
+        help="Optional local dataset root. Use this for a dataset outside HF_LEROBOT_HOME.",
+    )
+
+    parser.add_argument(
         "--output_dir",
         type=str,
         default=None,
@@ -118,7 +125,7 @@ def compute_norm_stats(cfg):
     torch.backends.cuda.matmul.allow_tf32 = True
 
     print(f"---------- compute statistics for dataset: {cfg.repo_id} ----------")
-    dataset = LeRobotDataset(cfg.repo_id)
+    dataset = LeRobotDataset(cfg.repo_id, root=cfg.root)
 
     from_ids = np.asarray(dataset.meta.episodes['dataset_from_index'])
     to_ids = np.asarray(dataset.meta.episodes['dataset_to_index'])
