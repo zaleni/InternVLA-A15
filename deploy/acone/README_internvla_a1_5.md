@@ -3,6 +3,19 @@
 Use `infer_internvla_a1_5.sh` for checkpoints trained with
 `launch/internvla_a15_finetune_acone.sh`.
 
+## Two-line hard-coded workflow
+
+Edit only `task` and `ckpt_path` near the top of
+`lerobot_infer_internvla_a1_5.py`, then run the InternVLA-A1.5 launcher:
+
+```bash
+bash deploy/acone/infer_internvla_a1_5.sh
+```
+
+The launcher selects the optimized backend and performs one real-observation
+warmup. It does not require typing `EXECUTE`; after reset, press Enter once to
+start inference and action publication. Pass `--no-execute` for a dry run.
+
 The checkpoint path must resolve to a `pretrained_model` directory containing:
 
 ```text
@@ -39,17 +52,12 @@ Dry-run mode subscribes to the real observations and performs inference but
 does not reset or publish actions:
 
 ```bash
-export CKPT_PATH=/path/to/output/checkpoints/060000/pretrained_model
-export VLM_PATH=/path/on/inference-machine/Qwen3.5-2B-Action
-export TASK='Fold the filter paper.'
-export EXECUTE_STEPS=10
-bash deploy/acone/infer_internvla_a1_5.sh --max-control-steps 100
+bash deploy/acone/infer_internvla_a1_5.sh --no-execute --max-control-steps 100
 ```
 
-`VLM_PATH` may be omitted when the absolute path stored in `config.json` also
-exists on the inference machine. `TASK` must be the task sentence stored in the
-training dataset metadata, not merely the dataset directory name; inspect
-`meta/tasks.jsonl` when uncertain.
+The hard-coded `task` must be the task sentence stored in the training dataset
+metadata, not merely the dataset directory name; inspect `meta/tasks.jsonl`
+when uncertain.
 
 ## Real execution
 
@@ -57,22 +65,12 @@ After checking camera order, qpos order, action values, reset pose, and gripper
 zero point in dry-run mode:
 
 ```bash
-export EXECUTE=1
 bash deploy/acone/infer_internvla_a1_5.sh
 ```
 
-The program requires typing `EXECUTE` before it publishes anything. Use
-`YES=1` only for an already validated unattended setup.
-
-For real execution, use the optimized backend and capture its CUDA graph before
-the first executable plan:
-
-```bash
-export INFERENCE_BACKEND=optimized
-export WARMUP_RUNS=1
-export EXECUTE=1
-bash deploy/acone/infer_internvla_a1_5.sh
-```
+There is no `EXECUTE` prompt. After the robot reaches its reset pose, press
+Enter once to start inference. The launcher enables real action publication by
+default.
 
 The adapter rejects non-finite actions, excessive command steps, excessive
 tracking error, stale inference results, and joint targets outside the

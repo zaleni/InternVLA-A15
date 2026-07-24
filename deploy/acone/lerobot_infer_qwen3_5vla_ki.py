@@ -1,10 +1,39 @@
-"""Legacy development snapshot.
+"""Two-line compatibility entry for InternVLA-A1.5 AConE deployment.
 
-This file targets the removed qwen3_5vla_ki_wan API and is kept only as a ROS
-control reference.  For checkpoints trained by
-launch/internvla_a15_finetune_acone.sh, run
-deploy/acone/lerobot_infer_internvla_a1_5.py instead.
+The executable branch forwards to ``lerobot_infer_internvla_a1_5.py``. The old
+Qwen3.5 development body below is retained only as a ROS control reference and
+is not reached when this file is run normally.
 """
+
+from pathlib import Path
+
+# =============================================================================
+# InternVLA-A1.5：只改下面两行，然后直接运行本文件。
+# =============================================================================
+task = "Fold the filter paper."
+ckpt_path = Path("/home/pjlab/caijh/InternVLA-A15/outputs/internvla_a1_5/internvla_a1_5_fold_filter_paper_delta_50k")
+
+if __name__ == "__main__":
+    import sys
+
+    user_args = sys.argv[1:]
+    sys.argv = [
+        sys.argv[0],
+        "--task",
+        task,
+        "--ckpt-path",
+        str(ckpt_path),
+        "--inference-backend",
+        "optimized",
+        "--warmup-runs",
+        "1",
+        "--execute",
+        *user_args,
+    ]
+    from lerobot_infer_internvla_a1_5 import main as internvla_a1_5_main
+
+    internvla_a1_5_main()
+    raise SystemExit
 
 import time
 import copy
@@ -98,31 +127,6 @@ def main():
     acone_config = OmegaConf.load(acone_config_path)
     acone = DeployACOne(acone_config, in_collect=False)
 
-    # task = "Zip the bag"
-    # ckpt_path = Path("")
-    # task = "Unscrew the cap"
-    # ckpt_path = Path("")
-    # task = "fold_the_airplane_box_blank"
-    # task = "real three fold v2"
-    # task = "Using the left arm, pick the orange tube to left box."
-    task = "Transfer the orange to the right box."
-    # task = "Place the orange tube in the left box."
-    ckpt_path = Path("/home/pjlab/caijh/qwen3_5_vqa/lerobot_lab/outputs/qwen3_5vla_ki_wan/2026_06_10_13_18_55-qwen3_5vla_ki_wan-robotwin-delta-pretrain-600k-novideo-test-tube-sorting-stride2/checkpoints/060000/pretrained_model")
-    # ckpt_path = Path("/home/pjlab/caijh/qwen3_5_vqa/lerobot_lab/outputs/qwen3_5vla_ki_wan/2026_06_11_14_09_30-qwen3_5vla_ki_wan-delta-pretrain-600k-novideo-test-tube-sorting-recover-clutter/checkpoints/060000/pretrained_model")
-    #ckpt_path = Path("/home/pjlab/caijh/qwen3_5_vqa/lerobot_lab/outputs/qwen3_5vla_ki_wan/2026_06_25_16_25_33-qwen3_5vla_ki_wan-delta-pretrain-600k-test-tube-sorting-video-blor/checkpoints/060000/pretrained_model")
-    # ckpt_path = Path("/home/pjlab/caijh/qwen3_5_vqa/lerobot_lab/outputs/qwen3_5vla_ki_wan/2026_06_28_07_42_04-qwen3_5vla_ki_wan-delta-pretrain-600k-sort_tube_blor_448-336/checkpoints/060000/pretrained_model")
-
-
-    # task = "Hole 1: insert blue tube."
-
-    # ckpt_path = Path("/home/pjlab/caijh/qwen3_5_vqa/lerobot_lab/outputs/qwen3_5vla_ki_wan/2026_06_18_14_08_31-qwen3_5vla_ki_wan-delta-pretrain-600k-insert-test-tube-iron-stand-new-mode-nob2o4/checkpoints/060000/pretrained_model")
-    
-    # task = "Move orange test tube from left 1 hole to right 3 hole."
-    # task = "Blue Left Eight"
-    # ckpt_path = Path("/home/pjlab/caijh/qwen3_5_vqa/lerobot_lab/outputs/qwen3_5vla_ki_wan/2026_06_27_14_20_45-qwen3_5vla_ki_wan-delta-pretrain-600k-move-b13-o24/checkpoints/060000/pretrained_model")
-    # ckpt_path = Path("/home/pjlab/caijh/qwen3_5_vqa/lerobot_lab/outputs/qwen3_5vla_ki_wan/2026_06_26_17_27_02-qwen3_5vla_ki_wan-delta-pretrain-600k-insert24_move13/checkpoints/060000/pretrained_model") 
-    # task = "Complete_chemical_reaction_experiment"
-    # ckpt_path = Path("/home/pjlab/caijh/qwen3_5_vqa/lerobot_lab/outputs/qwen3_5vla_ki_wan/2026_06_22_08_12_23-qwen3_5vla_ki_wan-delta-pretrain-600k-Complete_chemical_reaction_experiment-with-video/checkpoints/060000/pretrained_model")
     ckpt_name = ckpt_path.parts[2]
     config = PreTrainedConfig.from_pretrained(ckpt_path)
     config.compile_model = False

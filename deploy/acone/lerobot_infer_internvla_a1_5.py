@@ -6,7 +6,10 @@ This is the current-framework replacement for the old
 the ROS operator from that script, while using the public
 ``InternVLAA15Policy`` and the exact AConE training-time preprocessing layout.
 
-For safety, action publication is disabled unless ``--execute`` is provided.
+The shell/CLI workflow is dry-run unless ``--execute`` is provided. When this
+file is run without command-line arguments, it uses the two hard-coded values
+below. Real execution waits only for Enter after the reset pose is reached; it
+does not require typing a confirmation word.
 """
 
 from __future__ import annotations
@@ -23,6 +26,14 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+# Make direct ``python deploy/acone/<script>.py`` execution work without an
+# editable install or a manually exported PYTHONPATH.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+for import_root in (REPO_ROOT / "src", REPO_ROOT):
+    import_root_str = str(import_root)
+    if import_root_str not in sys.path:
+        sys.path.insert(0, import_root_str)
 
 import numpy as np
 import rclpy
@@ -49,13 +60,27 @@ from lerobot.transforms.core import (
 from lerobot.utils.constants import ACTION, OBS_STATE, OBS_STR
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ROS_CONFIG = REPO_ROOT / "deploy/src/config/acone_ros2_config.yaml"
 STAT_NAMES = ("min", "max", "mean", "std", "q01", "q99", "mask")
 INTEGER_DTYPES = (torch.int8, torch.int16, torch.int32, torch.int64, torch.uint8)
 
+# =============================================================================
+# 简单用法：通常只改下面 task 和 ckpt_path 两行，然后直接运行本文件。
+# ckpt_path 可以是训练输出目录，也可以是 checkpoints/xxxxxx/pretrained_model。
+# =============================================================================
+task = "Fold the filter paper."
+ckpt_path = Path("/home/pjlab/caijh/InternVLA-A15/outputs/internvla_a1_5/internvla_a1_5_fold_filter_paper_delta_50k")
+
+# 推理机上固定不变的基础 Qwen 路径，不换机器通常不用改。
+# 支持 Hugging Face cache 的 models--... 根目录，会自动解析 refs/main。
+vlm_path = Path(
+    "/home/pjlab/caijh/qwen3_5_vqa/lerobot_lab/hf_model/hub/"
+    "models--Qwen--Qwen3.5-2B-Action"
+)
+
 
 def parse_args() -> argparse.Namespace:
+    hardcoded_direct_run = len(sys.argv) == 1
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         description=__doc__,
@@ -63,10 +88,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--ckpt-path",
         type=Path,
-        required=True,
+        default=ckpt_path,
         help="pretrained_model directory, checkpoint step directory, or training output directory.",
     )
-    parser.add_argument("--task", required=True, help="Task text used during training.")
+    parser.add_argument("--task", default=task, help="Task text used during training.")
     parser.add_argument(
         "--language-memory",
         default="",
@@ -75,7 +100,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--vlm-path",
         type=Path,
-        default=None,
+        default=vlm_path,
         help="Deployment-machine Qwen3.5-Action directory; otherwise use checkpoint config.",
     )
     parser.add_argument("--robot-type", default="arx_acone")
@@ -86,7 +111,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--ros-config", type=Path, default=DEFAULT_ROS_CONFIG)
     parser.add_argument("--device", default="cuda")
-    parser.add_argument("--inference-backend", choices=("standard", "optimized"), default="standard")
+    parser.add_argument(
+        "--inference-backend",
+        choices=("standard", "optimized"),
+        default="optimized" if hardcoded_direct_run else "standard",
+    )
     parser.add_argument("--num-inference-steps", type=int, default=0)
     parser.add_argument("--resize-size", type=int, default=224)
     parser.add_argument("--max-prompt-length", type=int, default=650)
@@ -122,7 +151,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--warmup-runs",
         type=int,
-        default=0,
+        default=1 if hardcoded_direct_run else 0,
         help="Extra predictions on the first real observation before control starts.",
     )
     parser.add_argument("--seed", type=int, default=42)
@@ -171,15 +200,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--execute",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=hardcoded_direct_run,
         help="Actually publish robot actions. Without this flag the full pipeline is dry-run only.",
     )
     parser.add_argument("--skip-reset", action="store_true")
-    parser.add_argument(
-        "--yes",
-        action="store_true",
-        help="Skip the interactive confirmation required before reset/action publication.",
-    )
     parser.add_argument("--reset-left", default="0,0,0,0,0,0,-5")
     parser.add_argument("--reset-right", default="0,0,0,0,0,0,-5")
     return parser.parse_args()
@@ -215,17 +240,57 @@ def validate_ros_message_runtime() -> None:
 
 def resolve_checkpoint_path(path: Path) -> Path:
     path = path.expanduser().resolve()
-    candidates = (
+    candidates = [
         path,
         path / "pretrained_model",
         path / "checkpoints/last/pretrained_model",
-    )
+    ]
+    checkpoints_dir = path / "checkpoints"
+    if checkpoints_dir.is_dir():
+        numeric_steps = sorted(
+            (
+                candidate / "pretrained_model"
+                for candidate in checkpoints_dir.iterdir()
+                if candidate.is_dir() and candidate.name.isdigit()
+            ),
+            key=lambda candidate: int(candidate.parent.name),
+            reverse=True,
+        )
+        candidates.extend(numeric_steps)
     for candidate in candidates:
         if (candidate / "config.json").is_file() and (candidate / "model.safetensors").is_file():
             return candidate
     raise FileNotFoundError(
         "Could not find config.json + model.safetensors. Pass a pretrained_model directory, "
         f"a checkpoint step directory, or an output directory. Checked: {list(map(str, candidates))}"
+    )
+
+
+def resolve_vlm_path(path: Path) -> Path:
+    """Resolve either a model directory or a Hugging Face cache model root."""
+    path = path.expanduser().resolve()
+    if (path / "config.json").is_file():
+        return path
+
+    main_ref = path / "refs/main"
+    if main_ref.is_file():
+        revision = main_ref.read_text(encoding="utf-8").strip()
+        snapshot = path / "snapshots" / revision
+        if revision and (snapshot / "config.json").is_file():
+            return snapshot
+    snapshots_dir = path / "snapshots"
+    if snapshots_dir.is_dir():
+        snapshots = sorted(
+            candidate
+            for candidate in snapshots_dir.iterdir()
+            if (candidate / "config.json").is_file()
+        )
+        if len(snapshots) == 1:
+            return snapshots[0]
+
+    raise FileNotFoundError(
+        "Qwen VLM directory must contain config.json, or be a Hugging Face "
+        f"models--... cache root with refs/main. Got: {path}"
     )
 
 
@@ -418,7 +483,7 @@ class InternVLAA15AConEInference:
                 f"loaded {type(config).__name__}. Editing the type string alone cannot convert an old model."
             )
         if args.vlm_path is not None:
-            config.vlm_model_name_or_path = str(args.vlm_path.expanduser().resolve())
+            config.vlm_model_name_or_path = str(resolve_vlm_path(args.vlm_path))
         vlm_path = str(config.vlm_model_name_or_path)
         if Path(vlm_path).is_absolute() and not Path(vlm_path).exists():
             raise FileNotFoundError(
@@ -774,19 +839,6 @@ def poll_keyboard() -> str | None:
     return sys.stdin.readline().strip().lower()
 
 
-def confirm_execution(args: argparse.Namespace, left: np.ndarray, right: np.ndarray) -> None:
-    if not args.execute or args.yes:
-        return
-    print("\nREAL ROBOT ACTION PUBLICATION IS ENABLED.")
-    print(f"Checkpoint: {resolve_checkpoint_path(args.ckpt_path)}")
-    print(f"Task:       {args.task}")
-    print(f"Reset left: {left.tolist()}")
-    print(f"Reset right:{right.tolist()}")
-    answer = input("Type EXECUTE to continue: ").strip()
-    if answer != "EXECUTE":
-        raise RuntimeError("Execution was not confirmed.")
-
-
 def validate_joint_step(
     action: np.ndarray,
     reference: np.ndarray,
@@ -879,7 +931,6 @@ def main() -> None:
     if control_hz <= 0:
         raise ValueError(f"frame_rate must be positive, got {control_hz}")
 
-    confirm_execution(args, left_reset, right_reset)
     print_runtime_summary(args, inference, control_hz)
     robot = DeployACOne(ros_config, execute=args.execute)
     action_queue: deque[np.ndarray] = deque()
@@ -890,7 +941,7 @@ def main() -> None:
     try:
         if not args.skip_reset:
             robot.reset(left_reset, right_reset)
-            if args.execute and not args.yes:
+            if args.execute:
                 input("Reset complete. Press Enter to start inference: ")
 
         while rclpy.ok():
