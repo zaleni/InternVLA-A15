@@ -52,8 +52,8 @@ from lerobot.utils.constants import ACTION, OBS_STATE
 # =============================================================================
 # 和原部署脚本一样：通常只改下面两行。
 # =============================================================================
-task = "Fold the filter paper."
-ckpt_path = Path("/home/pjlab/caijh/InternVLA-A15/outputs/internvla_a1_5/internvla_a1_5_fold_filter_paper_delta_50k")
+task = "Fold the filter paper"
+ckpt_path = Path("/home/pjlab/caijh/InternVLA-A15/outputs/internvla_a1_5/internvla_a1_5_fold_filter_paper_delta_60k")
 
 # 推理机上的 Qwen3.5 主干路径；同一台机器通常不需要改。
 vlm_path = Path(
