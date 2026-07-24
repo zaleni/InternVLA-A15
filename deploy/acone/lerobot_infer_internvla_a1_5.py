@@ -197,28 +197,30 @@ def build_inputs(
     obs: dict,
     input_transforms,
     config: InternVLAA15Config,
-    dtype: torch.dtype,
+    model_dtype: torch.dtype,
 ) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
     """Apply the current A1.5 transforms while keeping the original sample layout."""
-    init_action = torch.as_tensor(obs["qpos"][None]).contiguous().cuda().to(dtype)
+    init_action = (
+        torch.as_tensor(obs["qpos"][None]).contiguous().cuda().to(torch.float32)
+    )
     sample = {
         "images.rgb.head": (
-            torch.as_tensor(obs["image_head"].copy()).contiguous().to(dtype) / 255.0
+            torch.as_tensor(obs["image_head"].copy()).contiguous().float() / 255.0
         ),
         "images.rgb.hand_left": (
-            torch.as_tensor(obs["image_left"].copy()).contiguous().to(dtype) / 255.0
+            torch.as_tensor(obs["image_left"].copy()).contiguous().float() / 255.0
         ),
         "images.rgb.hand_right": (
-            torch.as_tensor(obs["image_right"].copy()).contiguous().to(dtype) / 255.0
+            torch.as_tensor(obs["image_right"].copy()).contiguous().float() / 255.0
         ),
         # Hugging Face's processor runs on CPU; move its tensor outputs to CUDA
         # only after all preprocessing is complete.
-        OBS_STATE: torch.as_tensor(obs["qpos"]).contiguous().to(dtype),
+        OBS_STATE: torch.as_tensor(obs["qpos"]).contiguous().float(),
         # The current padding transform handles state and action together.
         ACTION: torch.zeros(
             config.chunk_size,
             14,
-            dtype=dtype,
+            dtype=torch.float32,
         ),
         "task": task,
     }
@@ -236,7 +238,7 @@ def build_inputs(
             if value.dtype in (torch.int64, torch.bool):
                 inputs[key] = value
             else:
-                inputs[key] = value.to(dtype=dtype)
+                inputs[key] = value.to(dtype=model_dtype)
     return inputs, init_action
 
 
@@ -267,7 +269,7 @@ def main():
 
     action_chunk = deque(maxlen=config.chunk_size)
     action_mode = "delta"
-    dtype = torch.float32
+    model_dtype = getattr(torch, config.dtype)
 
     policy = InternVLAA15Policy.from_pretrained(
         config=config,
@@ -275,7 +277,6 @@ def main():
         strict=False,
     )
     policy.cuda()
-    policy.to(dtype)
     policy.eval()
 
     total_params = sum(parameter.numel() for parameter in policy.parameters())
@@ -353,7 +354,7 @@ def main():
         dummy_obs,
         input_transforms,
         config,
-        dtype,
+        model_dtype,
     )
     with torch.no_grad():
         policy.predict_action_chunk(dummy_inputs)
@@ -367,7 +368,12 @@ def main():
         if len(action_chunk) == 0:
             print("predict new action chunk")
             obs = acone.get_observation()
-            inputs, init_action = build_inputs(obs, input_transforms, config, dtype)
+            inputs, init_action = build_inputs(
+                obs,
+                input_transforms,
+                config,
+                model_dtype,
+            )
 
             predict_started = time.perf_counter()
             with torch.no_grad():

@@ -42,3 +42,18 @@ The required current-framework substitutions are:
 - `InternVLAA15Policy` with its optimized action-inference backend;
 - `InternVLAA15ChatProcessorTransformFn`;
 - the `arx_acone` schema and checkpoint statistics.
+
+## ROS environment note
+
+The Ubuntu 22.04 ROS Humble `cv_bridge` binary is built against NumPy 1.x and
+Python 3.10. If importing `cv_bridge` reports `_ARRAY_API not found`, install
+NumPy 1.26.4 in the deployment environment:
+
+```bash
+python -m pip install --force-reinstall "numpy==1.26.4"
+```
+
+The Python 3.11 recommendation printed by Transformers can be ignored for this
+ROS Humble deployment. A warning about unexpected `_wan_grid_sizes` or
+`learnable_to_wan_proj` checkpoint keys is also expected: the action inference
+path deliberately skips the unused WAN video branch.
