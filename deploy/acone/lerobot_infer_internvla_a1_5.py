@@ -197,7 +197,7 @@ def build_inputs(
     obs: dict,
     input_transforms,
     config: InternVLAA15Config,
-    model_dtype: torch.dtype,
+    dtype: torch.dtype,
 ) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
     """Apply the current A1.5 transforms while keeping the original sample layout."""
     init_action = (
@@ -238,7 +238,7 @@ def build_inputs(
             if value.dtype in (torch.int64, torch.bool):
                 inputs[key] = value
             else:
-                inputs[key] = value.to(dtype=model_dtype)
+                inputs[key] = value.to(dtype=dtype)
     return inputs, init_action
 
 
@@ -269,7 +269,7 @@ def main():
 
     action_chunk = deque(maxlen=config.chunk_size)
     action_mode = "delta"
-    model_dtype = getattr(torch, config.dtype)
+    dtype = torch.float32
 
     policy = InternVLAA15Policy.from_pretrained(
         config=config,
@@ -277,6 +277,7 @@ def main():
         strict=False,
     )
     policy.cuda()
+    policy.to(dtype)
     policy.eval()
 
     total_params = sum(parameter.numel() for parameter in policy.parameters())
@@ -354,7 +355,7 @@ def main():
         dummy_obs,
         input_transforms,
         config,
-        model_dtype,
+        dtype,
     )
     with torch.no_grad():
         policy.predict_action_chunk(dummy_inputs)
@@ -372,7 +373,7 @@ def main():
                 obs,
                 input_transforms,
                 config,
-                model_dtype,
+                dtype,
             )
 
             predict_started = time.perf_counter()
