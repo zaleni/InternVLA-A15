@@ -5,22 +5,32 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "${PROJECT_ROOT}"
 
-export ROS_ENV_FILE="${ROS_ENV_FILE:-/home/pjlab/caijh/InternVLA-A15/.env.humble.bash}"
-
 # Optional deployment-machine environment setup:
 #   ROS_ENV_FILE=/path/to/.env.humble.bash
 #   ROS_SETUP=/opt/ros/humble/setup.bash
 #   ROBOT_OVERLAY_SETUP=/path/to/robot_ws/install/setup.bash
-if [[ -n "${ROS_ENV_FILE:-}" ]]; then
-    # shellcheck disable=SC1090
-    source "${ROS_ENV_FILE}"
-elif [[ -n "${ROS_SETUP:-}" ]]; then
-    # shellcheck disable=SC1090
-    source "${ROS_SETUP}"
+#
+# If the caller already sourced ROS, keep that environment and do not source it
+# a second time.
+if [[ -z "${ROS_DISTRO:-}" ]]; then
+    ros_env_path="${ROS_ENV_FILE:-${PROJECT_ROOT}/.env.humble.bash}"
+    if [[ -f "${ros_env_path}" ]]; then
+        # shellcheck disable=SC1090
+        set +u
+        source "${ros_env_path}"
+        set -u
+    elif [[ -n "${ROS_SETUP:-}" ]]; then
+        # shellcheck disable=SC1090
+        set +u
+        source "${ROS_SETUP}"
+        set -u
+    fi
 fi
-if [[ -z "${ROS_ENV_FILE:-}" && -n "${ROBOT_OVERLAY_SETUP:-}" ]]; then
+if [[ -n "${ROBOT_OVERLAY_SETUP:-}" ]]; then
     # shellcheck disable=SC1090
+    set +u
     source "${ROBOT_OVERLAY_SETUP}"
+    set -u
 fi
 
 export PYTHONPATH="${PROJECT_ROOT}/src:${PROJECT_ROOT}:${PYTHONPATH:-}"

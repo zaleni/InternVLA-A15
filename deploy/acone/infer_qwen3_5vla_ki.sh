@@ -9,7 +9,9 @@ cd "${PROJECT_ROOT}"
 ROS_ENV_FILE="${ROS_ENV_FILE:-${PROJECT_ROOT}/.env.humble.bash}"
 if [[ -f "${ROS_ENV_FILE}" ]]; then
     # shellcheck disable=SC1090
+    set +u
     source "${ROS_ENV_FILE}"
+    set -u
 fi
 
 export PYTHONPATH="${PROJECT_ROOT}/src:${PROJECT_ROOT}:${PYTHONPATH:-}"
