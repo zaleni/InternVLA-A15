@@ -262,6 +262,7 @@ def main():
     config.vlm_model_name_or_path = str(resolved_vlm)
     config.device = "cuda"
     config.compile_model = False
+    config.compile_mode = "reduce-overhead"
     config.gradient_checkpointing = False
     config.action_loss_only = True
     config.inference_backend = "optimized"
@@ -399,8 +400,8 @@ def main():
         action = action_chunk.popleft().to(torch.float32).cpu().numpy()
 
         # Preserve the active gripper postprocessing from the original script.
-        action[6] = 0 if action[6] > -1 else action[6]
-        action[13] = 0 if action[13] > -1 else action[13]
+        action[6] = 0 if action[6] > -0.5 else action[6]
+        action[13] = 0 if action[13] > -0.5 else action[13]
 
         acone.step(action)
         elapsed = time.perf_counter() - start_time
