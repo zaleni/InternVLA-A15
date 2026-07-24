@@ -77,12 +77,25 @@ if [[ "${ACTION_LOSS_ONLY}" != "true" ]]; then
     done
 fi
 
-PROC_PER_NODE="${PROC_PER_NODE:-8}"
-NODE_COUNT="${NODE_COUNT:-2}"
-NODE_RANK="${NODE_RANK:-0}"
-MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
-MASTER_PORT="${MASTER_PORT:-6379}"
+PROC_PER_NODE="${PROC_PER_NODE:-${SENSECORE_ACCELERATE_DEVICE_COUNT:-8}}"
+NODE_COUNT="${NODE_COUNT:-${SENSECORE_PYTORCH_NNODES:-${WORLD_SIZE:-2}}}"
+NODE_RANK="${NODE_RANK:-${SENSECORE_PYTORCH_NODE_RANK:-${RANK:-}}}"
+MASTER_ADDR="${MASTER_ADDR:-}"
+MASTER_PORT="${MASTER_PORT:-}"
+
+if [[ -z "${NODE_RANK}" ]]; then
+    echo "NODE_RANK is missing; refusing to start multi-node training." >&2
+    exit 2
+fi
+
+if [[ -z "${MASTER_ADDR}" || -z "${MASTER_PORT}" ]]; then
+    echo "MASTER_ADDR or MASTER_PORT is missing." >&2
+    exit 2
+fi
+
 NUM_PROCESSES=$((NODE_COUNT * PROC_PER_NODE))
+
+echo "Distributed config: node_rank=${NODE_RANK}, nodes=${NODE_COUNT}, gpu/node=${PROC_PER_NODE}, master=${MASTER_ADDR}:${MASTER_PORT}"
 
 BATCH_SIZE="${BATCH_SIZE:-8}"
 STEPS="${STEPS:-60000}"
@@ -102,7 +115,7 @@ if (( PROC_PER_NODE > GPU_COUNT )); then
     exit 2
 fi
 
-JOB_NAME="${JOB_NAME:-$(date +'%Y_%m_%d_%H_%M_%S')-internvla_a1_5-arx_acone-${SAFE_DATASET_NAME}-delta-finetune}"
+JOB_NAME="${JOB_NAME:-${SENSECORE_JOB_NAME:-$(date +'%Y_%m_%d_%H_%M_%S')}-internvla_a1_5-arx_acone-${SAFE_DATASET_NAME}-delta-finetune}"
 OUTPUT_DIR="${OUTPUT_DIR:-${PROJ_ROOT}/outputs/internvla_a1_5/${JOB_NAME}}"
 TASK_LOG_DIR="${TASK_LOG_DIR:-${PROJ_ROOT}/outputs/internvla_a1_5/logs/${SAFE_DATASET_NAME}}"
 TRAIN_LOG="${TRAIN_LOG:-${TASK_LOG_DIR}/${JOB_NAME}.node-${NODE_RANK}.log}"
