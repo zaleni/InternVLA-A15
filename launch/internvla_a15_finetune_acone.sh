@@ -91,7 +91,7 @@ for required_path in \
     fi
 done
 
-ACTION_LOSS_ONLY="${ACTION_LOSS_ONLY:-false}"
+ACTION_LOSS_ONLY="${ACTION_LOSS_ONLY:-true}"
 if [[ "${ACTION_LOSS_ONLY}" != "true" ]]; then
     for required_path in \
         "${WAN_PATH}/config.json" \
