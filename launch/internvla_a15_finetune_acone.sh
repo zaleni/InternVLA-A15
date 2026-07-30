@@ -5,11 +5,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJ_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${PROJ_ROOT}"
 
-# Dataset config: edit DATASET_ROOT when switching to another AConE dataset.
-DATASET_ROOT="/data/datasets/internvla_data/arx_acone/Pour_liquid_from_beaker_into_Erlenmeyer_flask"
-DATASET_NAME="$(basename "${DATASET_ROOT}")"
-DATASET_REPO_ID="arx_acone/${DATASET_NAME}"
-SAFE_DATASET_NAME="${DATASET_NAME//[^a-zA-Z0-9._-]/_}"
+# Dataset config. DATASET_REPO_ID may contain whitespace-separated repo IDs.
+DEFAULT_DATASET_ROOT="/data/datasets/internvla_data/arx_acone/Pour_liquid_from_beaker_into_Erlenmeyer_flask"
+DATASET_ROOT="${DATASET_ROOT:-${DEFAULT_DATASET_ROOT}}"
+DEFAULT_DATASET_NAME="$(basename "${DATASET_ROOT}")"
+DATASET_REPO_ID="${DATASET_REPO_ID:-arx_acone/${DEFAULT_DATASET_NAME}}"
+DATASET_TAG="${DATASET_TAG:-${DEFAULT_DATASET_NAME}}"
+SAFE_DATASET_NAME="${DATASET_TAG//[^a-zA-Z0-9._-]/_}"
+read -r -a DATASET_REPO_IDS <<< "${DATASET_REPO_ID}"
+if (( ${#DATASET_REPO_IDS[@]} == 0 )); then
+    echo "DATASET_REPO_ID must contain at least one repo ID." >&2
+    exit 2
+fi
 
 # Local runtime and assets.
 CONDA_ROOT="${CONDA_ROOT:-/data/jjhao/miniconda3}"
@@ -38,26 +45,42 @@ if [[ -z "${INTERNVLA_FAST_TOKENIZER_PATH:-}" ]]; then
     export INTERNVLA_FAST_TOKENIZER_PATH="${FAST_CACHE_DIR}/snapshots/${FAST_REVISION}"
 fi
 echo "[InternVLA] Dataset: ${DATASET_ROOT}"
+echo "[InternVLA] Repo IDs: ${DATASET_REPO_ID}"
 echo "[InternVLA] Qwen:   ${INTERNVLA_VLM_PATH}"
 echo "[InternVLA] FAST:    ${INTERNVLA_FAST_TOKENIZER_PATH}"
 echo "[InternVLA] Datasets cache: ${HF_DATASETS_CACHE}"
 
 PRETRAINED_PATH="${PRETRAINED_PATH:-/data/jjhao/data/model/a1.5_0600000_pretrained_model}"
-STATS_PATH="${STATS_PATH:-${HF_HOME}/lerobot/stats/delta/${DATASET_REPO_ID}/stats.json}"
+DEFAULT_STATS_PATH="${HF_HOME}/lerobot/stats/delta/${DATASET_REPO_ID}/stats.json"
+STATS_PATH="${STATS_PATH:-${DEFAULT_STATS_PATH}}"
 WAN_PATH="${WAN_PATH:-${HF_HOME}/hub/Wan2.2-TI2V-5B}"
 
 # Recompute the 50-step delta-action statistics only when they are absent.
 if [[ ! -f "${STATS_PATH}" ]]; then
+    if (( ${#DATASET_REPO_IDS[@]} != 1 )); then
+        echo "Aggregated delta stats are missing for this multi-repo run: ${STATS_PATH}" >&2
+        echo "Compute them with compute_norm_stats_multi.py, then set STATS_PATH explicitly." >&2
+        exit 2
+    fi
     python util_scripts/compute_norm_stats_single.py \
         --action_mode delta \
         --chunk_size 50 \
-        --repo_id "${DATASET_REPO_ID}" \
+        --repo_id "${DATASET_REPO_IDS[0]}" \
         --root "${DATASET_ROOT}" \
         --output_dir "${HF_HOME}/lerobot/stats"
 fi
 
+DATASET_INFO_PATHS=()
+if (( ${#DATASET_REPO_IDS[@]} == 1 )) && [[ -f "${DATASET_ROOT}/meta/info.json" ]]; then
+    DATASET_INFO_PATHS+=("${DATASET_ROOT}/meta/info.json")
+else
+    for repo_id in "${DATASET_REPO_IDS[@]}"; do
+        DATASET_INFO_PATHS+=("${DATASET_ROOT}/${repo_id}/meta/info.json")
+    done
+fi
+
 for required_path in \
-    "${DATASET_ROOT}/meta/info.json" \
+    "${DATASET_INFO_PATHS[@]}" \
     "${PRETRAINED_PATH}/model.safetensors" \
     "${STATS_PATH}" \
     "${INTERNVLA_VLM_PATH}/config.json" \

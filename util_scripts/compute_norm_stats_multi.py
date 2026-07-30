@@ -10,14 +10,19 @@ import torch
 import numpy as np
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.datasets.compute_stats import aggregate_stats
 from lerobot.dataset_schemas import get_schema
 from lerobot.utils.constants import OBS_STATE, ACTION, HF_LEROBOT_HOME
-from lerobot.datasets.utils import write_json
+from lerobot.datasets.utils import cast_stats_to_numpy, write_json
+
+
+DEFAULT_DATASET_ROOT = Path("/data/datasets/internvla_data")
+DEFAULT_STATS_ROOT = Path("/data/jjhao/huggingface/lerobot/stats")
 
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="Compute (and aggregate) normalization statistics for LeRobot datasets"
+        description="Compute (and aggregate) normalization statistics for LeRobot datasets",
     )
 
     p.add_argument(
@@ -41,6 +46,15 @@ def parse_args():
         help="One or more LeRobotDataset repo ids (must share the same robot_type and feature schema).",
     )
     p.add_argument(
+        "--root",
+        type=str,
+        default=None,
+        help=(
+            "Optional local dataset root. If omitted, each repo is resolved "
+            f"from {DEFAULT_DATASET_ROOT} first, then HF_LEROBOT_HOME."
+        ),
+    )
+    p.add_argument(
         "--num_workers",
         type=int,
         default=8,
@@ -49,8 +63,21 @@ def parse_args():
     p.add_argument(
         "--output_dir",
         type=str,
+        default=str(DEFAULT_STATS_ROOT),
+        help=(
+            "Stats root directory. Output is written below "
+            "<output_dir>/<action_mode>/<robot_type>/<stats_name>/stats.json. "
+            f"Default: {DEFAULT_STATS_ROOT}"
+        ),
+    )
+    p.add_argument(
+        "--stats_name",
+        type=str,
         default=None,
-        help="Optional output root directory. If not set, uses HF_LEROBOT_HOME/stats/...",
+        help=(
+            "Optional readable output directory name. "
+            "If omitted, a stable repo-list hash is used."
+        ),
     )
 
     return p.parse_args()
@@ -166,12 +193,17 @@ class RunningStats:
         }
 
 
-def _compute_one_repo(repo_id: str, action_mode: str, chunk_size: int) -> dict:
+def _compute_one_repo(
+    repo_id: str,
+    action_mode: str,
+    chunk_size: int,
+    repo_root: str | None,
+) -> dict:
     """Worker: compute stats for one repo, return serializable payload."""
     torch.backends.cudnn.benchmark = True
     torch.backends.cuda.matmul.allow_tf32 = True
 
-    dataset = LeRobotDataset(repo_id)
+    dataset = LeRobotDataset(repo_id, root=repo_root)
     robot_type = dataset.meta.robot_type
 
     schema = get_schema(robot_type)
@@ -185,6 +217,15 @@ def _compute_one_repo(repo_id: str, action_mode: str, chunk_size: int) -> dict:
 
     # Capture schema for consistency checks
     shapes = {k: dataset.meta.features[k]["shape"] for k in keys}
+    visual_keys = [
+        k
+        for k in dataset.meta.video_keys + dataset.meta.image_keys
+        if k in dataset.meta.stats
+    ]
+    visual_shapes = {k: dataset.meta.features[k]["shape"] for k in visual_keys}
+    visual_stats = {
+        k: _normalize_visual_stats(dataset.meta.stats[k]) for k in visual_keys
+    }
 
     stats = {k: RunningStats() for k in keys}
     total_frames = 0
@@ -237,6 +278,9 @@ def _compute_one_repo(repo_id: str, action_mode: str, chunk_size: int) -> dict:
         "keys": keys,
         "shapes": shapes,
         "payload": payload,
+        "visual_keys": visual_keys,
+        "visual_shapes": visual_shapes,
+        "visual_stats": visual_stats,
         "total_frames": int(total_frames),
         "skipped_episodes": int(skipped_episodes),
         "total_episodes": int(total_episodes),
@@ -248,6 +292,59 @@ def _make_group_name(repo_ids: list[str]) -> str:
     joined = "|".join(repo_ids)
     h = hashlib.sha1(joined.encode("utf-8")).hexdigest()[:10]
     return f"agg_{len(repo_ids)}repos_{h}"
+
+
+def _validate_stats_name(stats_name: str) -> str:
+    """Require a single safe directory component."""
+    candidate = Path(stats_name)
+    if (
+        not stats_name
+        or stats_name in {".", ".."}
+        or candidate.is_absolute()
+        or len(candidate.parts) != 1
+    ):
+        raise ValueError(
+            f"--stats_name must be one non-empty directory name, got: {stats_name!r}"
+        )
+    return stats_name
+
+
+def _resolve_repo_roots(repo_ids: list[str], root: str | None) -> list[str | None]:
+    """Resolve an optional direct dataset root or a parent containing repo IDs."""
+    if root is None:
+        repo_roots = []
+        for repo_id in repo_ids:
+            preferred_root = DEFAULT_DATASET_ROOT / repo_id
+            fallback_root = HF_LEROBOT_HOME / repo_id
+            if (preferred_root / "meta" / "info.json").is_file():
+                repo_roots.append(preferred_root)
+            elif (fallback_root / "meta" / "info.json").is_file():
+                repo_roots.append(fallback_root)
+            else:
+                raise FileNotFoundError(
+                    f"Local dataset not found for {repo_id!r}. Expected either "
+                    f"{preferred_root / 'meta' / 'info.json'} or "
+                    f"{fallback_root / 'meta' / 'info.json'}."
+                )
+        return [str(repo_root) for repo_root in repo_roots]
+
+    root_path = Path(root).expanduser()
+    if (root_path / "meta" / "info.json").is_file():
+        if len(repo_ids) != 1:
+            raise ValueError(
+                "--root points directly to one dataset, but multiple --repo_ids were provided."
+            )
+        repo_roots = [root_path]
+    else:
+        repo_roots = [root_path / repo_id for repo_id in repo_ids]
+
+    for repo_id, repo_root in zip(repo_ids, repo_roots, strict=True):
+        info_path = repo_root / "meta" / "info.json"
+        if not info_path.is_file():
+            raise FileNotFoundError(
+                f"Local dataset not found for {repo_id!r}: expected {info_path}"
+            )
+    return [str(repo_root) for repo_root in repo_roots]
 
 
 def _normalize_visual_stats(visual_stats: dict) -> dict:
@@ -263,14 +360,74 @@ def _normalize_visual_stats(visual_stats: dict) -> dict:
     return out
 
 
+def _aggregate_visual_stats(results: list[dict]) -> dict:
+    """Aggregate common camera stats using LeRobot's official weighted merge."""
+    common_keys = set(results[0]["visual_keys"])
+    for result in results[1:]:
+        common_keys &= set(result["visual_keys"])
+
+    bad_shape_keys = set()
+    first_shapes = results[0]["visual_shapes"]
+    for result in results[1:]:
+        for key in common_keys:
+            if result["visual_shapes"][key] != first_shapes[key]:
+                bad_shape_keys.add(key)
+    common_keys -= bad_shape_keys
+
+    ordered_keys = [
+        key for key in results[0]["visual_keys"] if key in common_keys
+    ]
+    dropped = {
+        result["repo_id"]: [
+            key for key in result["visual_keys"] if key not in common_keys
+        ]
+        for result in results
+    }
+    dropped = {repo_id: keys for repo_id, keys in dropped.items() if keys}
+    if dropped:
+        print("[WARN] Ignoring visual stats not common to all repos:")
+        for repo_id, keys in dropped.items():
+            print(f"  - {repo_id}: {keys}")
+    if bad_shape_keys:
+        print(
+            "[WARN] Dropped visual stats due to shape mismatch across repos: "
+            f"{sorted(bad_shape_keys)}"
+        )
+    if not ordered_keys:
+        return {}
+
+    if len(results) == 1:
+        return {
+            key: results[0]["visual_stats"][key] for key in ordered_keys
+        }
+
+    per_repo_stats = [
+        cast_stats_to_numpy(
+            {key: result["visual_stats"][key] for key in ordered_keys}
+        )
+        for result in results
+    ]
+    aggregated = aggregate_stats(per_repo_stats)
+    return {
+        key: _normalize_visual_stats(aggregated[key]) for key in ordered_keys
+    }
+
+
 def compute_norm_stats_multi(cfg):
     repo_ids = cfg.repo_ids
     action_mode = cfg.action_mode
     chunk_size = cfg.chunk_size
+    group_name = (
+        _validate_stats_name(cfg.stats_name)
+        if cfg.stats_name is not None
+        else _make_group_name(repo_ids)
+    )
+    repo_roots = _resolve_repo_roots(repo_ids, cfg.root)
 
     print(f"---------- aggregate stats for {len(repo_ids)} datasets ----------")
-    for rid in repo_ids:
-        print(f"  - {rid}")
+    for rid, repo_root in zip(repo_ids, repo_roots, strict=True):
+        print(f"  - {rid}: {repo_root or HF_LEROBOT_HOME / rid}")
+    print(f"stats_name: {group_name}")
 
     # Repo-level parallelism
     ctx = mp.get_context("spawn")
@@ -279,7 +436,10 @@ def compute_norm_stats_multi(cfg):
             tqdm.tqdm(
                 pool.starmap(
                     _compute_one_repo,
-                    [(rid, action_mode, chunk_size) for rid in repo_ids],
+                    [
+                        (rid, action_mode, chunk_size, repo_root)
+                        for rid, repo_root in zip(repo_ids, repo_roots, strict=True)
+                    ],
                 ),
                 total=len(repo_ids),
                 desc="Computing per-repo stats",
@@ -338,19 +498,16 @@ def compute_norm_stats_multi(cfg):
             global_stats[k].merge(tmp)
 
     output_dict = {k: global_stats[k].get_statistics() for k in keys0}
+    output_dict.update(_aggregate_visual_stats(results))
 
-    # # Visual stats: take from the first repo for simplicity
-    # first_ds = LeRobotDataset(repo_ids[0])
-    # for k in first_ds.meta.video_keys + first_ds.meta.image_keys:
-    #     output_dict[k] = _normalize_visual_stats(first_ds.meta.stats[k])
-
-    # Output path
-    group_name = _make_group_name(repo_ids)
-    if cfg.output_dir:
-        output_dir = Path(cfg.output_dir) / group_name
-    else:
-        out_root = HF_LEROBOT_HOME / "stats"
-        output_dir = out_root / robot_type / action_mode / group_name
+    # Output path: keep the established local layout, e.g.
+    # stats/delta/arx_acone/<stats_name>/stats.json.
+    output_dir = (
+        Path(cfg.output_dir).expanduser()
+        / action_mode
+        / robot_type
+        / group_name
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     write_json(output_dict, output_dir / "stats.json")
 
@@ -358,7 +515,7 @@ def compute_norm_stats_multi(cfg):
     print(f"robot_type: {robot_type}")
     print(f"action_mode: {action_mode}")
     print(f"chunk_size: {chunk_size}")
-    print(f"group_name: {group_name}")
+    print(f"stats_name: {group_name}")
     print(f"output: {output_dir / 'stats.json'}")
     print(f"total_frames (sum of episode lengths): {total_frames}")
     print(f"total_episodes: {total_episodes} (skipped: {skipped_episodes} episodes with len < chunk_size)")
