@@ -6,7 +6,7 @@ PROJ_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${PROJ_ROOT}"
 
 # Dataset config: edit DATASET_ROOT when switching to another AConE dataset.
-DATASET_ROOT="/data/datasets_real_v30/arx_acone/Fold_filter_paper"
+DATASET_ROOT="/data/datasets/internvla_data/arx_acone/Pour_liquid_from_beaker_into_Erlenmeyer_flask"
 DATASET_NAME="$(basename "${DATASET_ROOT}")"
 DATASET_REPO_ID="arx_acone/${DATASET_NAME}"
 SAFE_DATASET_NAME="${DATASET_NAME//[^a-zA-Z0-9._-]/_}"
@@ -19,6 +19,8 @@ source "${CONDA_ROOT}/etc/profile.d/conda.sh"
 conda activate "${CONDA_ENV}"
 
 export HF_HOME="${HF_HOME:-/data/jjhao/huggingface}"
+export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-/tmp/internvla_hf_datasets_cache}"
+mkdir -p "${HF_DATASETS_CACHE}"
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
 export TOKENIZERS_PARALLELISM=false
@@ -38,6 +40,7 @@ fi
 echo "[InternVLA] Dataset: ${DATASET_ROOT}"
 echo "[InternVLA] Qwen:   ${INTERNVLA_VLM_PATH}"
 echo "[InternVLA] FAST:    ${INTERNVLA_FAST_TOKENIZER_PATH}"
+echo "[InternVLA] Datasets cache: ${HF_DATASETS_CACHE}"
 
 PRETRAINED_PATH="${PRETRAINED_PATH:-/data/jjhao/data/model/a1.5_0600000_pretrained_model}"
 STATS_PATH="${STATS_PATH:-${HF_HOME}/lerobot/stats/delta/${DATASET_REPO_ID}/stats.json}"
@@ -103,7 +106,7 @@ SAVE_FREQ="${SAVE_FREQ:-10000}"
 LOG_FREQ="${LOG_FREQ:-100}"
 NUM_WORKERS="${NUM_WORKERS:-12}"
 GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:-false}"
-WANDB_ENABLE="${WANDB_ENABLE:-false}"
+WANDB_ENABLE="${WANDB_ENABLE:-true}"
 
 GPU_COUNT="$(python -c 'import torch; print(torch.cuda.device_count())')"
 if (( GPU_COUNT == 0 )); then
