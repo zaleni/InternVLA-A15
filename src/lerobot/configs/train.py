@@ -55,6 +55,9 @@ class TrainPipelineConfig(HubMixin):
     steps: int = 100_000
     eval_freq: int = 20_000
     log_freq: int = 200
+    # Compute separate VLM/action-expert gradient norms every N optimizer steps.
+    # Zero disables this diagnostic to avoid the per-parameter norm overhead.
+    module_grad_norm_freq: int = 0
     save_checkpoint: bool = True
     # Checkpoint is saved every `save_freq` training iterations and after the last training step.
     save_freq: int = 20_000
@@ -68,6 +71,12 @@ class TrainPipelineConfig(HubMixin):
     rename_map: dict[str, str] = field(default_factory=dict)
 
     def validate(self) -> None:
+        if self.module_grad_norm_freq < 0:
+            raise ValueError(
+                "module_grad_norm_freq must be >= 0, "
+                f"got {self.module_grad_norm_freq}"
+            )
+
         # HACK: We parse again the cli args here to get the pretrained paths if there was some.
         policy_path = parser.get_path_arg("policy")
         if policy_path:

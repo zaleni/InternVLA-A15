@@ -127,6 +127,7 @@ BATCH_SIZE="${BATCH_SIZE:-8}"
 STEPS="${STEPS:-60000}"
 SAVE_FREQ="${SAVE_FREQ:-10000}"
 LOG_FREQ="${LOG_FREQ:-100}"
+MODULE_GRAD_NORM_FREQ="${MODULE_GRAD_NORM_FREQ:-100}"
 NUM_WORKERS="${NUM_WORKERS:-12}"
 GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:-false}"
 WANDB_ENABLE="${WANDB_ENABLE:-true}"
@@ -168,6 +169,7 @@ echo "Checkpoint:   ${PRETRAINED_PATH}"
 echo "Output:       ${OUTPUT_DIR}"
 echo "Training log: ${TRAIN_LOG}"
 echo "Processes:    ${NUM_PROCESSES}; batch/GPU: ${BATCH_SIZE}"
+echo "Module grad norm frequency: ${MODULE_GRAD_NORM_FREQ}"
 
 accelerate launch "${ACCELERATE_ARGS[@]}" src/lerobot/scripts/lerobot_train.py \
     --output_dir="${OUTPUT_DIR}" \
@@ -212,6 +214,7 @@ accelerate launch "${ACCELERATE_ARGS[@]}" src/lerobot/scripts/lerobot_train.py \
     --steps="${STEPS}" \
     --save_freq="${SAVE_FREQ}" \
     --log_freq="${LOG_FREQ}" \
+    --module_grad_norm_freq="${MODULE_GRAD_NORM_FREQ}" \
     --wandb.enable="${WANDB_ENABLE}" \
     --wandb.project=internvla_a1_5 \
     --wandb.mode=offline 2>&1 | tee "${TRAIN_LOG}"

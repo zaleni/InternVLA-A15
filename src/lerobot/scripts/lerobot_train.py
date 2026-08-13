@@ -51,6 +51,89 @@ from lerobot.utils.utils import (
     gather_object, 
 )
 
+
+MODULE_GRAD_NORM_KEYS = ("grad_norm_vlm", "grad_norm_expert")
+
+
+def compute_grad_norm(parameters) -> torch.Tensor:
+    """Compute the L2 norm over a module's available parameter gradients."""
+    gradients = [
+        parameter.grad.detach()
+        for parameter in parameters
+        if parameter.grad is not None
+    ]
+    if not gradients:
+        return torch.tensor(0.0)
+
+    get_total_norm = getattr(torch.nn.utils, "get_total_norm", None)
+    if get_total_norm is not None:
+        return get_total_norm(
+            gradients,
+            norm_type=2.0,
+            error_if_nonfinite=False,
+            foreach=None,
+        )
+
+    gradient_norms = [
+        torch.linalg.vector_norm(gradient, ord=2).to(dtype=torch.float32)
+        for gradient in gradients
+    ]
+    return torch.linalg.vector_norm(torch.stack(gradient_norms), ord=2)
+
+
+def compute_module_grad_norm_metrics(unwrapped_policy) -> dict[str, float]:
+    """Measure the VLM and Transformer action-expert gradients when available."""
+    policy_model = getattr(unwrapped_policy, "model", None)
+    model_with_expert = getattr(policy_model, "qwen3_5_with_expert", None)
+    if model_with_expert is None:
+        return {}
+
+    # Match the online diagnostics in InternVLA-muon: measure the Qwen VLM and
+    # Transformer action expert, excluding action projections, learnable tokens,
+    # and the WAN auxiliary branch.
+    return {
+        "grad_norm_vlm": compute_grad_norm(
+            model_with_expert.qwen3_5.parameters()
+        ).item(),
+        "grad_norm_expert": compute_grad_norm(
+            model_with_expert.action_expert.parameters()
+        ).item(),
+    }
+
+
+def should_compute_module_grad_norm(
+    completed_step: int,
+    frequency: int,
+    is_main_process: bool,
+) -> bool:
+    """Return whether sparse module-gradient diagnostics should run this step."""
+    return is_main_process and frequency > 0 and completed_step % frequency == 0
+
+
+def update_module_grad_norm_meters(
+    meters: dict[str, AverageMeter],
+    metrics: dict[str, Any],
+) -> None:
+    """Accumulate sampled module-gradient metrics for the current log interval."""
+    for name in MODULE_GRAD_NORM_KEYS:
+        if name not in metrics:
+            continue
+        if name not in meters:
+            meters[name] = AverageMeter(name, ":.3f")
+        meters[name].update(float(metrics[name]))
+
+
+def active_module_grad_norm_metrics(
+    meters: dict[str, AverageMeter],
+) -> dict[str, float]:
+    """Return sampled interval averages without emitting false zeros."""
+    return {
+        name: meter.avg
+        for name, meter in meters.items()
+        if meter.count > 0
+    }
+
+
 def update_policy(
     train_metrics: MetricsTracker,
     policy: PreTrainedPolicy,
@@ -60,6 +143,7 @@ def update_policy(
     accelerator: Accelerator,
     lr_scheduler=None,
     lock=None,
+    compute_module_grad_norms: bool = False,
 ) -> tuple[MetricsTracker, dict]:
     """
     Performs a single training step to update the policy's weights.
@@ -76,6 +160,8 @@ def update_policy(
         accelerator: The Accelerator instance for distributed training and mixed precision.
         lr_scheduler: An optional learning rate scheduler.
         lock: An optional lock for thread-safe optimizer updates.
+        compute_module_grad_norms: Whether to sample separate VLM and action
+            expert gradient norms before clipping.
 
     Returns:
         A tuple containing:
@@ -92,6 +178,13 @@ def update_policy(
 
     # Use accelerator's backward method
     accelerator.backward(loss)
+
+    if compute_module_grad_norms:
+        unwrapped_policy = accelerator.unwrap_model(policy, keep_fp32_wrapper=True)
+        module_grad_norm_metrics = compute_module_grad_norm_metrics(unwrapped_policy)
+        if module_grad_norm_metrics:
+            output_dict = dict(output_dict)
+            output_dict.update(module_grad_norm_metrics)
 
     # Clip gradients if specified
     if grad_clip_norm > 0:
@@ -329,6 +422,8 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         logging.info("Start offline training on a fixed dataset")
         training_start_time = time.perf_counter()
 
+    module_grad_norm_meters: dict[str, AverageMeter] = {}
+
     for _ in range(step, cfg.steps):
         start_time = time.perf_counter()
         batch = next(dl_iter)
@@ -344,7 +439,14 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             cfg.optimizer.grad_clip_norm,
             accelerator=accelerator,
             lr_scheduler=lr_scheduler,
+            compute_module_grad_norms=should_compute_module_grad_norm(
+                completed_step=step + 1,
+                frequency=cfg.module_grad_norm_freq,
+                is_main_process=is_main_process,
+            ),
         )
+        if is_main_process:
+            update_module_grad_norm_meters(module_grad_norm_meters, output_dict)
 
         # Note: eval and checkpoint happens *after* the `step`th training update has completed, so we
         # increment `step` here.
@@ -364,13 +466,27 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             elapsed_str = format_time(elapsed_time)
             remaining_str = format_time(estimated_remaining_time)
 
-            logging.info(f" \033[92m\033[1m{elapsed_str} << {remaining_str}\033[0m | \033[96m\033[1m{steps_per_second:.2f} iters/s\033[0m | {train_tracker}")
+            sampled_grad_metrics = active_module_grad_norm_metrics(module_grad_norm_meters)
+            sampled_grad_text = "".join(
+                f" | {name}:{value:.3f}"
+                for name, value in sampled_grad_metrics.items()
+            )
+            logging.info(f" \033[92m\033[1m{elapsed_str} << {remaining_str}\033[0m | \033[96m\033[1m{steps_per_second:.2f} iters/s\033[0m | {train_tracker}{sampled_grad_text}")
             if wandb_logger:
                 wandb_log_dict = train_tracker.to_dict()
                 if output_dict:
-                    wandb_log_dict.update(output_dict)
+                    wandb_log_dict.update(
+                        {
+                            name: value
+                            for name, value in output_dict.items()
+                            if name not in MODULE_GRAD_NORM_KEYS
+                        }
+                    )
+                wandb_log_dict.update(sampled_grad_metrics)
                 wandb_logger.log_dict(wandb_log_dict, step)
             train_tracker.reset_averages()
+            for meter in module_grad_norm_meters.values():
+                meter.reset()
 
         if cfg.save_checkpoint and is_saving_step:
             if is_main_process:
