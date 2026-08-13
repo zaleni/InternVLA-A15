@@ -1,3 +1,4 @@
+import math
 import unittest
 from contextlib import nullcontext
 from types import SimpleNamespace
@@ -8,6 +9,7 @@ from torch import nn
 from lerobot.configs.train import TrainPipelineConfig
 from lerobot.scripts.lerobot_train import (
     active_module_grad_norm_metrics,
+    compute_grad_clip_metrics,
     compute_grad_norm,
     compute_module_grad_norm_metrics,
     should_compute_module_grad_norm,
@@ -78,6 +80,35 @@ class TrainingDiagnosticsTest(unittest.TestCase):
         self.assertEqual(norm.item(), 5.0)
         self.assertTrue(torch.equal(parameter.grad, before))
 
+    def test_grad_clip_metrics_match_pytorch_scaling(self):
+        clip_coef, clip_fraction = compute_grad_clip_metrics(4.0, 1.0)
+        self.assertAlmostEqual(clip_coef, 1.0 / (4.0 + 1e-6))
+        self.assertEqual(clip_fraction, 1.0)
+
+        self.assertEqual(compute_grad_clip_metrics(0.5, 1.0), (1.0, 0.0))
+        self.assertEqual(compute_grad_clip_metrics(4.0, 0.0), (1.0, 0.0))
+
+        boundary_coef, boundary_fraction = compute_grad_clip_metrics(1.0, 1.0)
+        self.assertAlmostEqual(boundary_coef, 1.0 / (1.0 + 1e-6))
+        self.assertEqual(boundary_fraction, 0.0)
+
+        self.assertEqual(compute_grad_clip_metrics(float("inf"), 1.0), (0.0, 1.0))
+        nan_coef, nan_fraction = compute_grad_clip_metrics(float("nan"), 1.0)
+        self.assertTrue(math.isnan(nan_coef))
+        self.assertEqual(nan_fraction, 1.0)
+
+    def test_clip_metrics_are_averaged_over_the_log_interval(self):
+        coef_meter = AverageMeter("grad_clip_coef")
+        fraction_meter = AverageMeter("grad_clip_fraction")
+
+        for grad_norm in (0.5, 2.0):
+            clip_coef, clip_fraction = compute_grad_clip_metrics(grad_norm, 1.0)
+            coef_meter.update(clip_coef)
+            fraction_meter.update(clip_fraction)
+
+        self.assertAlmostEqual(coef_meter.avg, (1.0 + 1.0 / (2.0 + 1e-6)) / 2.0)
+        self.assertEqual(fraction_meter.avg, 0.5)
+
     def test_module_metrics_are_separate_and_ignore_other_parameters(self):
         vlm = nn.Linear(1, 1, bias=False)
         expert = nn.Linear(1, 1, bias=False)
@@ -110,6 +141,8 @@ class TrainingDiagnosticsTest(unittest.TestCase):
             metrics={
                 "loss": AverageMeter("loss"),
                 "grad_norm": AverageMeter("grad_norm"),
+                "grad_clip_coef": AverageMeter("grad_clip_coef"),
+                "grad_clip_fraction": AverageMeter("grad_clip_fraction"),
                 "lr": AverageMeter("lr"),
                 "update_s": AverageMeter("update_s"),
             },
@@ -128,6 +161,8 @@ class TrainingDiagnosticsTest(unittest.TestCase):
         self.assertEqual(output["grad_norm_vlm"], 3.0)
         self.assertEqual(output["grad_norm_expert"], 4.0)
         self.assertAlmostEqual(tracker.grad_norm.val, 5.0, places=5)
+        self.assertAlmostEqual(tracker.grad_clip_coef.val, 1.0 / (5.0 + 1e-6))
+        self.assertEqual(tracker.grad_clip_fraction.val, 1.0)
 
     def test_sparse_metric_meters_average_and_do_not_emit_false_zero(self):
         meters = {}

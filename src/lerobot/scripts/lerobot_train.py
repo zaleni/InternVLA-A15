@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import logging
+import math
 import time
 from contextlib import nullcontext
 from pprint import pformat
@@ -53,6 +54,21 @@ from lerobot.utils.utils import (
 
 
 MODULE_GRAD_NORM_KEYS = ("grad_norm_vlm", "grad_norm_expert")
+
+
+def compute_grad_clip_metrics(
+    grad_norm: float,
+    grad_clip_norm: float,
+) -> tuple[float, float]:
+    """Return the applied clip coefficient and a nonfinite-or-over-limit indicator."""
+    if grad_clip_norm <= 0:
+        return 1.0, 0.0
+
+    # Match torch.nn.utils.clip_grad_norm_ for the coefficient. Averaging the
+    # per-step over-limit indicator yields the clipping fraction per log interval.
+    clip_coef = min(grad_clip_norm / (grad_norm + 1e-6), 1.0)
+    clip_fraction = float(not math.isfinite(grad_norm) or grad_norm > grad_clip_norm)
+    return clip_coef, clip_fraction
 
 
 def compute_grad_norm(parameters) -> torch.Tensor:
@@ -193,6 +209,11 @@ def update_policy(
         grad_norm = torch.nn.utils.clip_grad_norm_(
             policy.parameters(), float("inf"), error_if_nonfinite=False
         )
+    grad_norm_value = grad_norm.item()
+    grad_clip_coef, grad_clip_fraction = compute_grad_clip_metrics(
+        grad_norm_value,
+        grad_clip_norm,
+    )
 
     # Optimizer step
     with lock if lock is not None else nullcontext():
@@ -219,7 +240,9 @@ def update_policy(
         train_metrics.loss_fast = output_dict["loss_fast"]
     if "loss_subtask" in output_dict:
         train_metrics.loss_subtask = output_dict["loss_subtask"]
-    train_metrics.grad_norm = grad_norm.item()
+    train_metrics.grad_norm = grad_norm_value
+    train_metrics.grad_clip_coef = grad_clip_coef
+    train_metrics.grad_clip_fraction = grad_clip_fraction
     train_metrics.lr = optimizer.param_groups[0]["lr"]
     train_metrics.update_s = time.perf_counter() - start_time
     return train_metrics, output_dict
@@ -394,6 +417,9 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             "update_s": AverageMeter("updt_s", ":.3f"),
             "dataloading_s": AverageMeter("data_s", ":.3f"),
         }
+
+    train_metrics["grad_clip_coef"] = AverageMeter("gclip", ":.3e")
+    train_metrics["grad_clip_fraction"] = AverageMeter("gclipf", ":.3f")
   
     if getattr(cfg.policy, "enable_vqa_loss", False):
         train_metrics["loss_vqa"] = AverageMeter("loss_vqa", ":.3f")
