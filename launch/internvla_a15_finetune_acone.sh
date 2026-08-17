@@ -18,6 +18,16 @@ if (( ${#DATASET_REPO_IDS[@]} == 0 )); then
     exit 2
 fi
 
+# Optional sampling policy. Legacy behavior (false) pads future action queries
+# with the episode's final frame. When true, only complete action chunks are
+# sampled. An empty repo selector applies the policy to every configured repo.
+DROP_INCOMPLETE_ACTION_CHUNKS="${DROP_INCOMPLETE_ACTION_CHUNKS:-false}"
+DROP_INCOMPLETE_ACTION_CHUNK_REPO_IDS="${DROP_INCOMPLETE_ACTION_CHUNK_REPO_IDS:-}"
+if [[ "${DROP_INCOMPLETE_ACTION_CHUNKS}" != "true" && "${DROP_INCOMPLETE_ACTION_CHUNKS}" != "false" ]]; then
+    echo "DROP_INCOMPLETE_ACTION_CHUNKS must be true or false." >&2
+    exit 2
+fi
+
 # Local runtime and assets.
 CONDA_ROOT="${CONDA_ROOT:-/data/jjhao/miniconda3}"
 CONDA_ENV="${CONDA_ENV:-internvla_a1_5}"
@@ -46,6 +56,12 @@ if [[ -z "${INTERNVLA_FAST_TOKENIZER_PATH:-}" ]]; then
 fi
 echo "[InternVLA] Dataset: ${DATASET_ROOT}"
 echo "[InternVLA] Repo IDs: ${DATASET_REPO_ID}"
+if [[ "${DROP_INCOMPLETE_ACTION_CHUNKS}" == "true" ]]; then
+    echo "[InternVLA] Complete action chunks: enabled"
+    echo "[InternVLA] Complete action chunk repos: ${DROP_INCOMPLETE_ACTION_CHUNK_REPO_IDS:-<all configured repos>}"
+else
+    echo "[InternVLA] Complete action chunks: disabled (legacy final-frame padding)"
+fi
 echo "[InternVLA] Qwen:   ${INTERNVLA_VLM_PATH}"
 echo "[InternVLA] FAST:    ${INTERNVLA_FAST_TOKENIZER_PATH}"
 echo "[InternVLA] Datasets cache: ${HF_DATASETS_CACHE}"
@@ -171,6 +187,15 @@ echo "Training log: ${TRAIN_LOG}"
 echo "Processes:    ${NUM_PROCESSES}; batch/GPU: ${BATCH_SIZE}"
 echo "Module grad norm frequency: ${MODULE_GRAD_NORM_FREQ}"
 
+CHUNK_FILTER_ARGS=(
+    --dataset.drop_incomplete_action_chunks="${DROP_INCOMPLETE_ACTION_CHUNKS}"
+)
+if [[ -n "${DROP_INCOMPLETE_ACTION_CHUNK_REPO_IDS}" ]]; then
+    CHUNK_FILTER_ARGS+=(
+        --dataset.drop_incomplete_action_chunk_repo_ids="${DROP_INCOMPLETE_ACTION_CHUNK_REPO_IDS}"
+    )
+fi
+
 accelerate launch "${ACCELERATE_ARGS[@]}" src/lerobot/scripts/lerobot_train.py \
     --output_dir="${OUTPUT_DIR}" \
     --job_name="${JOB_NAME}" \
@@ -207,6 +232,7 @@ accelerate launch "${ACCELERATE_ARGS[@]}" src/lerobot/scripts/lerobot_train.py \
     --dataset.external_stats_path="${STATS_PATH}" \
     --dataset.video_backend=pyav \
     --dataset.dist_loading=false \
+    "${CHUNK_FILTER_ARGS[@]}" \
     --dataset.tokenize_state=true \
     --dataset.use_fast_action_tokens=true \
     --seed=42 \

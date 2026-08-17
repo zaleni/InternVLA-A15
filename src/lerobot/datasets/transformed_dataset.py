@@ -1,4 +1,5 @@
 from __future__ import annotations
+from bisect import bisect_right
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Dict, List, Sequence, Optional
@@ -82,6 +83,99 @@ class TransformedLeRobotDataset(LeRobotDataset):
     def __repr__(self) -> str:
         base = super().__repr__().rstrip("\n")
         return base + f" (Transformed from {getattr(self, '_wrapped_base_cls', 'LeRobotDataset')})\n"
+
+
+class CompleteActionChunkDataset(Dataset):
+    """Expose only sample anchors with a complete future action window.
+
+    ``LeRobotDataset`` normally clamps a future query that crosses an episode
+    boundary to the final frame and emits a ``*_is_pad`` tensor.  Some policies
+    (including InternVLA A1.5) do not preserve that mask all the way to every
+    action loss.  This lightweight map-style wrapper filters invalid *anchors*
+    instead.  It does not edit, copy, or truncate the underlying dataset.
+
+    The index mapping is represented by one interval per episode, so memory use
+    is O(number of episodes), rather than O(number of frames).
+    """
+
+    def __init__(self, dataset: Dataset, max_future_offset: int) -> None:
+        super().__init__()
+        if max_future_offset < 0:
+            raise ValueError(f"max_future_offset must be non-negative, got {max_future_offset}.")
+        if not hasattr(dataset, "meta") or not hasattr(dataset.meta, "episodes"):
+            raise TypeError("CompleteActionChunkDataset requires episode boundary metadata.")
+
+        source_from = np.asarray(dataset.meta.episodes["dataset_from_index"], dtype=np.int64)
+        source_to = np.asarray(dataset.meta.episodes["dataset_to_index"], dtype=np.int64)
+        if source_from.ndim != 1 or source_to.ndim != 1 or len(source_from) != len(source_to):
+            raise ValueError("Invalid episode boundary metadata.")
+        if np.any(source_to < source_from):
+            raise ValueError("Episode end indices must not precede episode start indices.")
+
+        self.dataset = dataset
+        self.max_future_offset = int(max_future_offset)
+        self._source_episode_from_indices = source_from.tolist()
+        self._source_episode_to_indices = source_to.tolist()
+
+        valid_lengths = np.maximum(source_to - source_from - self.max_future_offset, 0)
+        logical_to = np.cumsum(valid_lengths, dtype=np.int64)
+        logical_from = logical_to - valid_lengths
+
+        self._valid_lengths = valid_lengths.tolist()
+        self._logical_cumulative_lengths = logical_to.tolist()
+        # These boundaries describe the wrapper's logical index space.  Keep
+        # zero-length episodes so episode ordering/count remains unchanged.
+        self.sampling_episode_from_indices = logical_from.tolist()
+        self.sampling_episode_to_indices = logical_to.tolist()
+
+    @property
+    def repo_id(self) -> str:
+        return self.dataset.repo_id
+
+    @property
+    def meta(self):
+        return self.dataset.meta
+
+    @property
+    def num_frames(self) -> int:
+        return len(self)
+
+    @property
+    def num_episodes(self) -> int:
+        return self.dataset.num_episodes
+
+    @property
+    def fps(self) -> int:
+        return self.dataset.fps
+
+    @property
+    def source_num_frames(self) -> int:
+        return self.dataset.num_frames
+
+    def __len__(self) -> int:
+        return self._logical_cumulative_lengths[-1] if self._logical_cumulative_lengths else 0
+
+    def _logical_to_source_index(self, idx: int) -> int:
+        if idx < 0:
+            idx += len(self)
+        if idx < 0 or idx >= len(self):
+            raise IndexError(f"Index {idx} out of range for size {len(self)}.")
+
+        episode_position = bisect_right(self._logical_cumulative_lengths, idx)
+        logical_start = self.sampling_episode_from_indices[episode_position]
+        source_start = self._source_episode_from_indices[episode_position]
+        return source_start + (idx - logical_start)
+
+    def __getitem__(self, idx: int):
+        return self.dataset[self._logical_to_source_index(idx)]
+
+    def __repr__(self) -> str:
+        removed = self.source_num_frames - self.num_frames
+        return (
+            "CompleteActionChunkDataset("
+            f"repo_id={self.repo_id!r}, samples={self.num_frames}, "
+            f"removed_anchors={removed}, max_future_offset={self.max_future_offset})"
+        )
 
 
 @dataclass
@@ -183,8 +277,15 @@ class MultiLeRobotDataset(Dataset):
         running_frame = 0
 
         for ds in self.datasets:
-            dataset_from_index = np.asarray(ds.meta.episodes["dataset_from_index"]) + running_frame
-            dataset_to_index = np.asarray(ds.meta.episodes["dataset_to_index"]) + running_frame
+            if hasattr(ds, "sampling_episode_from_indices"):
+                episode_from = ds.sampling_episode_from_indices
+                episode_to = ds.sampling_episode_to_indices
+            else:
+                episode_from = ds.meta.episodes["dataset_from_index"]
+                episode_to = ds.meta.episodes["dataset_to_index"]
+
+            dataset_from_index = np.asarray(episode_from) + running_frame
+            dataset_to_index = np.asarray(episode_to) + running_frame
 
             episodes["dataset_from_index"].extend(dataset_from_index.tolist())
             episodes["dataset_to_index"].extend(dataset_to_index.tolist())

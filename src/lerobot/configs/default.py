@@ -44,6 +44,12 @@ class DatasetConfig(draccus.ChoiceRegistry, abc.ABC):
     streaming: bool = False
     dist_loading: bool = False
     buffer_size: int = 1024
+    # By default, queries that extend past an episode are padded with its final frame.
+    # When enabled, hide sample anchors whose complete future action window is unavailable.
+    # If repo ids/patterns are provided, apply the filter only to matching repos; an empty
+    # value applies it to every configured repo. Shell-style wildcards are supported.
+    drop_incomplete_action_chunks: bool = False
+    drop_incomplete_action_chunk_repo_ids: str | list[str] | None = None
     action_mode: str = "abs"  # abs | delta
     repack_transforms: TransformGroup = field(default_factory=TransformGroup)
     data_transforms: TransformGroup = field(default_factory=TransformGroup)

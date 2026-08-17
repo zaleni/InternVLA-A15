@@ -13,10 +13,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import re
 import logging
-from pathlib import Path
+import re
 from collections import defaultdict
+from fnmatch import fnmatchcase
+from pathlib import Path
+
 from omegaconf import OmegaConf, DictConfig
 
 import torch
@@ -35,6 +37,7 @@ from lerobot.datasets.streaming_dataset import StreamingLeRobotDataset
 from lerobot.datasets.transformed_dataset import (
     TransformedLeRobotDataset, 
     TransformedStreamingLeRobotDataset, 
+    CompleteActionChunkDataset,
     MultiLeRobotDataset, 
     MultiStreamingLeRobotDataset, 
 )
@@ -118,6 +121,54 @@ def parse_repo_ids(repo_ids_cfg: str | list[str] | tuple[str, ...]) -> list[str]
         f"Unsupported repo_id type: {type(repo_ids_cfg)}. "
         "Expected str, list[str], or tuple[str, ...]."
     )
+
+
+def parse_optional_repo_patterns(
+    value: str | list[str] | tuple[str, ...] | None,
+) -> list[str]:
+    """Parse an optional whitespace-separated/list repo selector."""
+    if value is None:
+        return []
+    return parse_repo_ids(value)
+
+
+def repo_matches_patterns(repo_id: str, patterns: list[str]) -> bool:
+    """Match either a full repo id or its basename using shell-style patterns."""
+    repo_basename = Path(repo_id).name
+    return any(
+        fnmatchcase(repo_id, pattern) or fnmatchcase(repo_basename, pattern)
+        for pattern in patterns
+    )
+
+
+def should_drop_incomplete_action_chunks(cfg: TrainPipelineConfig, repo_id: str) -> bool:
+    if not cfg.dataset.drop_incomplete_action_chunks:
+        return False
+    patterns = parse_optional_repo_patterns(cfg.dataset.drop_incomplete_action_chunk_repo_ids)
+    return not patterns or repo_matches_patterns(repo_id, patterns)
+
+
+def get_max_action_future_offset(dataset: LeRobotDataset) -> int:
+    """Return the largest future frame offset queried for an action feature."""
+    if dataset.delta_indices is None:
+        raise ValueError(
+            "drop_incomplete_action_chunks=True requires action delta indices, but this dataset has none."
+        )
+
+    schema = get_schema(dataset.meta.robot_type)
+    action_keys = {ACTION, *schema.get_action_keys()}
+    offsets = [
+        int(offset)
+        for key, key_offsets in dataset.delta_indices.items()
+        if key in action_keys
+        for offset in key_offsets
+    ]
+    if not offsets:
+        raise ValueError(
+            "drop_incomplete_action_chunks=True, but no action query offsets were resolved "
+            f"for repo {dataset.repo_id!r}."
+        )
+    return max(0, max(offsets))
 
 
 def load_info_for_repos(
@@ -426,6 +477,28 @@ def _build_single_dataset(
 
     stats_copy = base_ds.meta.stats.copy()
 
+    if should_drop_incomplete_action_chunks(cfg, repo_id):
+        max_future_offset = get_max_action_future_offset(base_ds)
+        source_samples = transformed_ds.num_frames
+        transformed_ds = CompleteActionChunkDataset(
+            transformed_ds,
+            max_future_offset=max_future_offset,
+        )
+        if transformed_ds.num_frames == 0:
+            raise ValueError(
+                "Complete-action-chunk filtering removed every sample from "
+                f"repo {repo_id!r}; max_future_offset={max_future_offset}."
+            )
+        logging.info(
+            "[complete_action_chunks] repo_id=%s source_samples=%d valid_samples=%d "
+            "removed_anchors=%d max_future_offset=%d",
+            repo_id,
+            source_samples,
+            transformed_ds.num_frames,
+            source_samples - transformed_ds.num_frames,
+            max_future_offset,
+        )
+
     return transformed_ds, stats_copy, robot_type
 
 
@@ -497,6 +570,42 @@ def make_dataset(cfg: TrainPipelineConfig):
     logging.info(
         f"[make_dataset] all_repo_ids={all_repo_ids}"
     )
+
+    chunk_filter_patterns = parse_optional_repo_patterns(
+        cfg.dataset.drop_incomplete_action_chunk_repo_ids
+    )
+    if cfg.dataset.drop_incomplete_action_chunks:
+        if cfg.dataset.streaming:
+            raise ValueError(
+                "drop_incomplete_action_chunks is currently supported only for map-style "
+                "datasets; set dataset.streaming=false."
+            )
+        unmatched_patterns = [
+            pattern
+            for pattern in chunk_filter_patterns
+            if not any(repo_matches_patterns(repo_id, [pattern]) for repo_id in all_repo_ids)
+        ]
+        if unmatched_patterns:
+            raise ValueError(
+                "drop_incomplete_action_chunk_repo_ids contains selectors that match no configured repo: "
+                f"{unmatched_patterns}. Configured repos: {all_repo_ids}"
+            )
+        filtered_repo_ids = [
+            repo_id
+            for repo_id in all_repo_ids
+            if not chunk_filter_patterns or repo_matches_patterns(repo_id, chunk_filter_patterns)
+        ]
+        logging.info(
+            "[complete_action_chunks] enabled; selected_repos=%s; "
+            "unselected repos keep legacy final-frame padding",
+            filtered_repo_ids,
+        )
+    elif chunk_filter_patterns:
+        logging.warning(
+            "drop_incomplete_action_chunk_repo_ids=%s is ignored because "
+            "drop_incomplete_action_chunks=false.",
+            chunk_filter_patterns,
+        )
 
     frames_map, episodes_map = load_info_for_repos(cfg, all_repo_ids)
     weight_cfg = None
