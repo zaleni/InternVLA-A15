@@ -450,8 +450,14 @@ def _build_single_dataset(
     # Optional: override stats using ImageNet norm
     if cfg.dataset.use_imagenet_stats:
         for key in base_ds.meta.camera_keys:
+            # Some valid LeRobot datasets do not carry visual statistics in
+            # meta/stats.json (for example, datasets converted from v2.1 whose
+            # source episodes_stats.jsonl omitted image stats).  ImageNet
+            # normalization supplies the values we need, so create the camera
+            # entry instead of assuming it already exists.
+            camera_stats = base_ds.meta.stats.setdefault(key, {})
             for stats_type, stats in IMAGENET_STATS.items():
-                base_ds.meta.stats[key][stats_type] = torch.tensor(
+                camera_stats[stats_type] = torch.tensor(
                     stats, dtype=torch.float32
                 )
 
