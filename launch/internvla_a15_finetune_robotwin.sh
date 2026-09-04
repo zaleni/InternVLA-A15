@@ -117,6 +117,7 @@ if [[ -z "${MASTER_ADDR}" || -z "${MASTER_PORT}" ]]; then
 fi
 
 NUM_PROCESSES=$((NODE_COUNT * PROC_PER_NODE))
+echo "Distributed config: node_rank=${NODE_RANK}, nodes=${NODE_COUNT}, gpu/node=${PROC_PER_NODE}, master=${MASTER_ADDR}:${MASTER_PORT}"
 
 if [[ -z "${DIST_LOADING:-}" ]]; then
     if (( NUM_PROCESSES > 1 )); then
@@ -221,12 +222,16 @@ fi
 DATASET_TAG="${DATASET_TAG:-${DEFAULT_DATASET_TAG}}"
 SAFE_DATASET_TAG="${DATASET_TAG//[^a-zA-Z0-9._-]/_}"
 RUN_TAG="${RUN_TAG:-}"
-RUN_PREFIX="${RUN_ID:-$(date +'%Y_%m_%d_%H_%M_%S')}"
+# SENSECORE_JOB_NAME is not present on every platform image. MASTER_ADDR and
+# MASTER_PORT are shared by all nodes in one submitted job, so they provide a
+# stable fallback instead of independent per-node timestamps.
+RUN_PREFIX="${RUN_ID:-${MASTER_ADDR}-${MASTER_PORT}}"
 SAFE_RUN_PREFIX="${RUN_PREFIX//[^a-zA-Z0-9._-]/_}"
 JOB_NAME="${JOB_NAME:-${SAFE_RUN_PREFIX}-${POLICY}-${SAFE_DATASET_TAG}-${ACTION_TYPE}-finetune${RUN_TAG:+-${RUN_TAG}}}"
 BASE_OUTPUT_DIR="${BASE_OUTPUT_DIR:-${PROJ_ROOT}/outputs/${POLICY}}"
 OUTPUT_DIR="${OUTPUT_DIR:-${BASE_OUTPUT_DIR}/${JOB_NAME}}"
-TRAIN_LOG="${TRAIN_LOG:-${OUTPUT_DIR}/train.node-${NODE_RANK}.log}"
+TASK_LOG_DIR="${TASK_LOG_DIR:-${BASE_OUTPUT_DIR}/logs/${SAFE_DATASET_TAG}}"
+TRAIN_LOG="${TRAIN_LOG:-${TASK_LOG_DIR}/${JOB_NAME}.node-${NODE_RANK}.log}"
 
 ACCELERATE_ARGS=(
     --num_processes="${NUM_PROCESSES}"
@@ -313,6 +318,7 @@ echo "[InternVLA Robotwin] teacher mode/frozen: ${WAN_TEACHER_MODE} / ${FREEZE_W
 echo "[InternVLA Robotwin] subtask annotations: ${USE_SUBTASK_ANNOTATIONS}"
 echo "[InternVLA Robotwin] processes: ${NUM_PROCESSES}; batch/GPU: ${BATCH_SIZE}"
 echo "[InternVLA Robotwin] output: ${OUTPUT_DIR}"
+echo "[InternVLA Robotwin] log: ${TRAIN_LOG}"
 
 if [[ "${DRY_RUN}" == "true" ]]; then
     printf 'accelerate launch'
@@ -321,5 +327,9 @@ if [[ "${DRY_RUN}" == "true" ]]; then
     exit 0
 fi
 
-mkdir -p "${OUTPUT_DIR}"
+mkdir -p "${TASK_LOG_DIR}"
+ln -sfn "$(basename "${TRAIN_LOG}")" "${TASK_LOG_DIR}/latest-node-${NODE_RANK}.log"
+if (( NODE_RANK == 0 )); then
+    ln -sfn "$(basename "${TRAIN_LOG}")" "${TASK_LOG_DIR}/latest.log"
+fi
 accelerate launch "${ACCELERATE_ARGS[@]}" "${TRAIN_ARGS[@]}" 2>&1 | tee "${TRAIN_LOG}"
