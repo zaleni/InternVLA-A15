@@ -506,24 +506,71 @@ class ReorderStateActionTransform(DataTransformFn):
 @DataTransformFn.register_subclass("load_action_text_from_jsonl")
 @dataclass
 class LoadActionTextFromJsonlTransformFn(DataTransformFn):
-    """Load action_text and language_memory from episodes_detailed_task.jsonl by episode/frame index."""
+    """Load per-frame subtask supervision from legacy or CapCap annotations."""
 
     annotations_file: str = ""
     output_key: str = "sub_task"
     memory_output_key: str = "language_memory"
+    accepted_capcap_statuses: tuple[str, ...] = ("machine_supported",)
     _cache: dict[int, tuple[list[int], list[tuple[int, int, str, str]]]] = field(default_factory=dict, init=False, repr=False)
     _loaded: bool = field(default=False, init=False, repr=False)
 
     def hydrate(self, dataset: LeRobotDataset | StreamingLeRobotDataset) -> LoadActionTextFromJsonlTransformFn:
         if not self.annotations_file:
             repo_root = Path(str(getattr(dataset, "root", "")))
-            candidate = repo_root / "meta" / "episodes_detailed_task.jsonl"
-            if candidate.exists():
-                obj = replace(self, annotations_file=str(candidate))
-                obj._load_cache()
-                return obj
+            for filename in ("episodes_detailed_task.jsonl", "annotations.jsonl"):
+                candidate = repo_root / "meta" / filename
+                if candidate.exists():
+                    obj = replace(self, annotations_file=str(candidate))
+                    obj._load_cache()
+                    return obj
         self._load_cache()
         return self
+
+    def _parse_annotation(
+        self,
+        obj: dict,
+    ) -> tuple[int, list[tuple[int, int, str, str]]] | None:
+        """Normalize legacy and CapCap records to half-open frame segments."""
+        if "episode_index" in obj and "action_config" in obj:
+            ep_idx = int(obj["episode_index"])
+            raw_segments = obj.get("action_config", [])
+            segments = [
+                (
+                    int(segment["start_frame"]),
+                    int(segment["end_frame"]),
+                    str(segment.get("action_text", "")),
+                    str(segment.get("language_memory", "")),
+                )
+                for segment in raw_segments
+            ]
+        else:
+            source = obj.get("source", {})
+            labels = obj.get("labels", {})
+            if "episode_index" not in source or "segments" not in labels:
+                return None
+            ep_idx = int(source["episode_index"])
+            quality_status = str(obj.get("quality", {}).get("status", ""))
+            if (
+                quality_status
+                and self.accepted_capcap_statuses
+                and quality_status not in self.accepted_capcap_statuses
+            ):
+                # Keep the robot sample for action/video training but omit its
+                # lower-confidence language target.
+                return ep_idx, []
+            # Do not feed observed_task_plan or future captions back as input:
+            # only the current segment's subtask is used as a target.
+            segments = [
+                (
+                    int(segment["start_frame"]),
+                    int(segment["end_frame"]),
+                    str(segment.get("subtask", "")),
+                    "",
+                )
+                for segment in labels.get("segments", [])
+            ]
+        return ep_idx, sorted(segments, key=lambda segment: segment[0])
 
     def _load_cache(self) -> None:
         if self._loaded:
@@ -541,15 +588,10 @@ class LoadActionTextFromJsonlTransformFn(DataTransformFn):
                 if not line:
                     continue
                 obj = json.loads(line)
-                ep_idx = int(obj["episode_index"])
-                segments = sorted(
-                    [
-                        (int(s["start_frame"]), int(s["end_frame"]),
-                         s.get("action_text", ""), s.get("language_memory", ""))
-                        for s in obj.get("action_config", [])
-                    ],
-                    key=lambda x: x[0],
-                )
+                parsed = self._parse_annotation(obj)
+                if parsed is None:
+                    continue
+                ep_idx, segments = parsed
                 self._cache[ep_idx] = ([s[0] for s in segments], segments)
 
     def __call__(self, data: DataDict) -> DataDict:

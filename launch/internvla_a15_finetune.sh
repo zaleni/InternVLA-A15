@@ -63,6 +63,12 @@ cd ${PROJ_ROOT}
 # Match the local A1.5 checkpoint config.json: type=internvla_a1_5.
 POLICY="internvla_a1_5"
 PRETRAINED_PATH="InternRobotics/InternVLA-A1.5-base"
+WAN_BASE_PATH="${WAN_BASE_PATH:-${HF_HOME}/hub/Wan2.2-TI2V-5B}"
+WAN_CHECKPOINT_PATH="${WAN_CHECKPOINT_PATH:-${WAN_BASE_PATH}}"
+WAN_CONFIG_PATH="${WAN_CONFIG_PATH:-${WAN_BASE_PATH}}"
+WAN_VAE_PATH="${WAN_VAE_PATH:-${WAN_BASE_PATH}/Wan2.2_VAE.pth}"
+WAN_TEACHER_MODE="${WAN_TEACHER_MODE:-auto}"
+FREEZE_LEARNABLE_TOKENS="${FREEZE_LEARNABLE_TOKENS:-true}"
 
 # 2. dataset config
 DATASET_REPO_ID="$1"
@@ -110,8 +116,12 @@ ARGS=(
     --policy.video_loss_only=false           # Do not train only the video branch.
     --policy.video_loss_weight=1             # Weight for video auxiliary loss.
     --policy.action_loss_only=false          # fine-tune with video loss.
-    --policy.freeze_learnable_tokens=true    # Freeze the learned foresight tokens.
+    --policy.freeze_learnable_tokens="${FREEZE_LEARNABLE_TOKENS}" # Set false for a new AHA teacher.
     --policy.num_learnable_tokens=50
+    --policy.wan_checkpoint_path="${WAN_CHECKPOINT_PATH}"
+    --policy.wan_config_path="${WAN_CONFIG_PATH}"
+    --policy.vae_path="${WAN_VAE_PATH}"
+    --policy.wan_teacher_mode="${WAN_TEACHER_MODE}"
 
     # ---- Dataset ----
     --dataset.type="$POLICY"   

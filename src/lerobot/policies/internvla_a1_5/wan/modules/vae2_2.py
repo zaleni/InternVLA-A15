@@ -1,8 +1,8 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 import logging
+from contextlib import nullcontext
 
 import torch
-import torch.cuda.amp as amp
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
@@ -899,7 +899,7 @@ class Wan2_2_VAE:
     ):
 
         self.dtype = dtype
-        self.device = device
+        self.device = torch.device(device)
 
         mean = torch.tensor(
             [
@@ -953,7 +953,7 @@ class Wan2_2_VAE:
                 -0.0667,
             ],
             dtype=dtype,
-            device=device,
+            device=self.device,
         )
         std = torch.tensor(
             [
@@ -1007,7 +1007,7 @@ class Wan2_2_VAE:
                 0.7744,
             ],
             dtype=dtype,
-            device=device,
+            device=self.device,
         )
         self.scale = [mean, 1.0 / std]
 
@@ -1019,17 +1019,24 @@ class Wan2_2_VAE:
                 dim=c_dim,
                 dim_mult=dim_mult,
                 temperal_downsample=temperal_downsample,
-            ).eval().requires_grad_(False).to(device))
+            ).eval().requires_grad_(False).to(device=self.device, dtype=self.dtype))
+
+    def _autocast_context(self):
+        if self.device.type == "cuda" and self.dtype in (torch.float16, torch.bfloat16):
+            return torch.amp.autocast("cuda", dtype=self.dtype)
+        return nullcontext()
 
     def encode(self, videos):
-        with torch.amp.autocast("cuda", dtype=self.dtype):
+        videos = videos.to(device=self.device, dtype=self.dtype)
+        with self._autocast_context():
             return self.model.encode(videos, self.scale)
 
     def decode(self, zs):
         try:
             if not isinstance(zs, list):
                 raise TypeError("zs should be a list")
-            with amp.autocast(dtype=self.dtype):
+            zs = [z.to(device=self.device, dtype=self.dtype) for z in zs]
+            with self._autocast_context():
                 return [
                     self.model.decode(u.unsqueeze(0),
                                       self.scale).float().clamp_(-1,

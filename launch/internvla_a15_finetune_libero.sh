@@ -67,6 +67,12 @@ PRETRAINED_PATH="InternRobotics/InternVLA-A1.5-base"
 # Official Qwen3.5-2B; A1.5 adds FAST action tokens at runtime.
 # The old expanded Qwen3.5-2B-Action path is still compatible.
 VLM_MODEL_PATH="${VLM_MODEL_PATH:-Qwen/Qwen3.5-2B}"
+WAN_BASE_PATH="${WAN_BASE_PATH:-${HF_HOME}/hub/Wan2.2-TI2V-5B}"
+WAN_CHECKPOINT_PATH="${WAN_CHECKPOINT_PATH:-${WAN_BASE_PATH}}"
+WAN_CONFIG_PATH="${WAN_CONFIG_PATH:-${WAN_BASE_PATH}}"
+WAN_VAE_PATH="${WAN_VAE_PATH:-${WAN_BASE_PATH}/Wan2.2_VAE.pth}"
+WAN_TEACHER_MODE="${WAN_TEACHER_MODE:-auto}"
+FREEZE_LEARNABLE_TOKENS="${FREEZE_LEARNABLE_TOKENS:-false}"
 
 # 2. dataset config
 # Discovers the four LIBERO subsets under data/libero/ that ship with meta/ +
@@ -166,8 +172,12 @@ ARGS=(
     --policy.video_loss_only=false            # Do not train only the video branch.
     --policy.video_loss_weight=1              # Weight for video auxiliary loss.
     --policy.action_loss_only=false           # Fine-tune with video loss.
-    --policy.freeze_learnable_tokens=false    # Keep the learned foresight tokens trainable.
+    --policy.freeze_learnable_tokens="${FREEZE_LEARNABLE_TOKENS}" # Keep false for a new AHA teacher.
     --policy.num_learnable_tokens=50
+    --policy.wan_checkpoint_path="${WAN_CHECKPOINT_PATH}"
+    --policy.wan_config_path="${WAN_CONFIG_PATH}"
+    --policy.vae_path="${WAN_VAE_PATH}"
+    --policy.wan_teacher_mode="${WAN_TEACHER_MODE}"
 
     # ---- Dataset ----
     --dataset.type="$POLICY"

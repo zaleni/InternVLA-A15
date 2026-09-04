@@ -63,8 +63,12 @@ POLICY="internvla_a1_5"
 # Official Qwen3.5-2B; A1.5 adds FAST action tokens at runtime.
 # The old expanded Qwen3.5-2B-Action path is still compatible.
 VLM_MODEL_PATH="${VLM_MODEL_PATH:-Qwen/Qwen3.5-2B}"
-WAN_MODEL_PATH="${WAN_MODEL_PATH:-${HF_HOME}/hub/Wan2.2-TI2V-5B}"
-VAE_PATH="${VAE_PATH:-${WAN_MODEL_PATH}/Wan2.2_VAE.pth}"
+WAN_BASE_PATH="${WAN_BASE_PATH:-${WAN_MODEL_PATH:-${HF_HOME}/hub/Wan2.2-TI2V-5B}}"
+WAN_CHECKPOINT_PATH="${WAN_CHECKPOINT_PATH:-${WAN_BASE_PATH}}"
+WAN_CONFIG_PATH="${WAN_CONFIG_PATH:-${WAN_BASE_PATH}}"
+WAN_VAE_PATH="${WAN_VAE_PATH:-${VAE_PATH:-${WAN_BASE_PATH}/Wan2.2_VAE.pth}}"
+WAN_TEACHER_MODE="${WAN_TEACHER_MODE:-auto}"
+FREEZE_LEARNABLE_TOKENS="${FREEZE_LEARNABLE_TOKENS:-false}"
 
 # 2. dataset config
 DATASET_REPO_ID="$(
@@ -139,8 +143,12 @@ ARGS=(
     --policy.video_loss_only=false
     --policy.video_loss_weight=1
     --policy.action_loss_only=false
-    --policy.freeze_learnable_tokens=false
+    --policy.freeze_learnable_tokens="${FREEZE_LEARNABLE_TOKENS}"
     --policy.num_learnable_tokens=50
+    --policy.wan_checkpoint_path="${WAN_CHECKPOINT_PATH}"
+    --policy.wan_config_path="${WAN_CONFIG_PATH}"
+    --policy.vae_path="${WAN_VAE_PATH}"
+    --policy.wan_teacher_mode="${WAN_TEACHER_MODE}"
 
     # ---- Dataset ----
     --dataset.type="$POLICY"

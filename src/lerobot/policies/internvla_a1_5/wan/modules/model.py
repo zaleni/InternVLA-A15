@@ -3,6 +3,7 @@ import math
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.models.modeling_utils import ModelMixin
 
@@ -169,6 +170,7 @@ class WanSelfAttention(nn.Module):
                 action_q: torch.Tensor = None,
                 action_k: torch.Tensor = None,
                 action_v: torch.Tensor = None,
+                self_attn_mask: torch.Tensor = None,
                 # und_q: torch.Tensor = None,
                 # und_k: torch.Tensor = None,
                 # und_v: torch.Tensor = None
@@ -245,13 +247,33 @@ class WanSelfAttention(nn.Module):
             
             return tuple(outputs)
 
-        # Standard branch (no MoT)
-        x = flash_attention(
-            q=rope_apply(q, grid_sizes, freqs),
-            k=rope_apply(k, grid_sizes, freqs),
-            v=v,
-            k_lens=seq_lens,
-            window_size=self.window_size)
+        # Standard branch (no MoT). AHA-WAM trains its Video Expert with a
+        # frame-level causal mask. FlashAttention's scalar ``causal`` flag is
+        # token-causal and therefore cannot represent that mask, so use SDPA
+        # only for the masked path and preserve the original fast path.
+        q = rope_apply(q, grid_sizes, freqs)
+        k = rope_apply(k, grid_sizes, freqs)
+        if self_attn_mask is None:
+            x = flash_attention(
+                q=q,
+                k=k,
+                v=v,
+                k_lens=seq_lens,
+                window_size=self.window_size)
+        else:
+            if self_attn_mask.ndim == 3:
+                self_attn_mask = self_attn_mask.unsqueeze(1)
+            if self_attn_mask.ndim not in (2, 4):
+                raise ValueError(
+                    "self_attn_mask must be [L, L] or [B, 1, L, L], "
+                    f"got {tuple(self_attn_mask.shape)}"
+                )
+            x = F.scaled_dot_product_attention(
+                q.to(v.dtype).transpose(1, 2),
+                k.to(v.dtype).transpose(1, 2),
+                v.transpose(1, 2),
+                attn_mask=self_attn_mask,
+            ).transpose(1, 2).contiguous()
 
         # output
         x = x.flatten(2)
@@ -330,6 +352,7 @@ class WanAttentionBlock(nn.Module):
         freqs,
         context,
         context_lens,
+        self_attn_mask=None,
     ):
         r"""
         Args:
@@ -347,7 +370,7 @@ class WanAttentionBlock(nn.Module):
         # self-attention
         y = self.self_attn(
             self.norm1(x).float() * (1 + e[1].squeeze(2)) + e[0].squeeze(2),
-            seq_lens, grid_sizes, freqs)
+            seq_lens, grid_sizes, freqs, self_attn_mask=self_attn_mask)
         with torch.amp.autocast('cuda', dtype=torch.float32):
             x = x + y * e[2].squeeze(2)
 

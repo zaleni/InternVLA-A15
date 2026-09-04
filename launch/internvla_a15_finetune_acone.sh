@@ -69,7 +69,11 @@ echo "[InternVLA] Datasets cache: ${HF_DATASETS_CACHE}"
 PRETRAINED_PATH="${PRETRAINED_PATH:-/data/jjhao/data/model/a1.5_0600000_pretrained_model}"
 DEFAULT_STATS_PATH="${HF_HOME}/lerobot/stats/delta/${DATASET_REPO_ID}/stats.json"
 STATS_PATH="${STATS_PATH:-${DEFAULT_STATS_PATH}}"
-WAN_PATH="${WAN_PATH:-${HF_HOME}/hub/Wan2.2-TI2V-5B}"
+WAN_BASE_PATH="${WAN_BASE_PATH:-${WAN_PATH:-${HF_HOME}/hub/Wan2.2-TI2V-5B}}"
+WAN_CHECKPOINT_PATH="${WAN_CHECKPOINT_PATH:-${WAN_BASE_PATH}}"
+WAN_CONFIG_PATH="${WAN_CONFIG_PATH:-${WAN_BASE_PATH}}"
+WAN_VAE_PATH="${WAN_VAE_PATH:-${WAN_BASE_PATH}/Wan2.2_VAE.pth}"
+WAN_TEACHER_MODE="${WAN_TEACHER_MODE:-auto}"
 
 # Recompute the 50-step delta-action statistics only when they are absent.
 if [[ ! -f "${STATS_PATH}" ]]; then
@@ -109,9 +113,13 @@ done
 
 ACTION_LOSS_ONLY="${ACTION_LOSS_ONLY:-true}"
 if [[ "${ACTION_LOSS_ONLY}" != "true" ]]; then
+    if [[ ! -e "${WAN_CHECKPOINT_PATH}" ]]; then
+        echo "Required WAN checkpoint not found: ${WAN_CHECKPOINT_PATH}" >&2
+        exit 1
+    fi
     for required_path in \
-        "${WAN_PATH}/config.json" \
-        "${WAN_PATH}/Wan2.2_VAE.pth"; do
+        "${WAN_CONFIG_PATH}/config.json" \
+        "${WAN_VAE_PATH}"; do
         if [[ ! -f "${required_path}" ]]; then
             echo "Required WAN file not found: ${required_path}" >&2
             exit 1
@@ -147,6 +155,9 @@ MODULE_GRAD_NORM_FREQ="${MODULE_GRAD_NORM_FREQ:-100}"
 NUM_WORKERS="${NUM_WORKERS:-12}"
 GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:-false}"
 WANDB_ENABLE="${WANDB_ENABLE:-true}"
+FREEZE_LEARNABLE_TOKENS="${FREEZE_LEARNABLE_TOKENS:-true}"
+FREEZE_WAN_DIT="${FREEZE_WAN_DIT:-true}"
+VIDEO_LOSS_WEIGHT="${VIDEO_LOSS_WEIGHT:-1}"
 
 GPU_COUNT="$(python -c 'import torch; print(torch.cuda.device_count())')"
 if (( GPU_COUNT == 0 )); then
@@ -158,7 +169,8 @@ if (( PROC_PER_NODE > GPU_COUNT )); then
     exit 2
 fi
 
-JOB_NAME="${JOB_NAME:-${SENSECORE_JOB_NAME:-$(date +'%Y_%m_%d_%H_%M_%S')}-internvla_a1_5-arx_acone-${SAFE_DATASET_NAME}-delta-finetune}"
+RUN_TAG="${RUN_TAG:-}"
+JOB_NAME="${JOB_NAME:-${SENSECORE_JOB_NAME:-$(date +'%Y_%m_%d_%H_%M_%S')}-internvla_a1_5-arx_acone-${SAFE_DATASET_NAME}-delta-finetune${RUN_TAG:+-${RUN_TAG}}}"
 OUTPUT_DIR="${OUTPUT_DIR:-${PROJ_ROOT}/outputs/internvla_a1_5/${JOB_NAME}}"
 TASK_LOG_DIR="${TASK_LOG_DIR:-${PROJ_ROOT}/outputs/internvla_a1_5/logs/${SAFE_DATASET_NAME}}"
 TRAIN_LOG="${TRAIN_LOG:-${TASK_LOG_DIR}/${JOB_NAME}.node-${NODE_RANK}.log}"
@@ -186,6 +198,12 @@ echo "Output:       ${OUTPUT_DIR}"
 echo "Training log: ${TRAIN_LOG}"
 echo "Processes:    ${NUM_PROCESSES}; batch/GPU: ${BATCH_SIZE}"
 echo "Module grad norm frequency: ${MODULE_GRAD_NORM_FREQ}"
+if [[ "${ACTION_LOSS_ONLY}" != "true" ]]; then
+    echo "WAN checkpoint: ${WAN_CHECKPOINT_PATH}"
+    echo "WAN config:     ${WAN_CONFIG_PATH}"
+    echo "WAN VAE:        ${WAN_VAE_PATH}"
+    echo "WAN mode:       ${WAN_TEACHER_MODE}"
+fi
 
 CHUNK_FILTER_ARGS=(
     --dataset.drop_incomplete_action_chunks="${DROP_INCOMPLETE_ACTION_CHUNKS}"
@@ -204,9 +222,10 @@ accelerate launch "${ACCELERATE_ARGS[@]}" src/lerobot/scripts/lerobot_train.py \
     --policy.repo_id=lerobot_lab/internvla_a1_5 \
     --policy.pretrained_path="${PRETRAINED_PATH}" \
     --policy.vlm_model_name_or_path="${INTERNVLA_VLM_PATH}" \
-    --policy.wan_checkpoint_path="${WAN_PATH}" \
-    --policy.wan_config_path="${WAN_PATH}" \
-    --policy.vae_path="${WAN_PATH}/Wan2.2_VAE.pth" \
+    --policy.wan_checkpoint_path="${WAN_CHECKPOINT_PATH}" \
+    --policy.wan_config_path="${WAN_CONFIG_PATH}" \
+    --policy.vae_path="${WAN_VAE_PATH}" \
+    --policy.wan_teacher_mode="${WAN_TEACHER_MODE}" \
     --policy.push_to_hub=false \
     --policy.dtype=bfloat16 \
     --policy.gradient_checkpointing="${GRADIENT_CHECKPOINTING}" \
@@ -220,9 +239,10 @@ accelerate launch "${ACCELERATE_ARGS[@]}" src/lerobot/scripts/lerobot_train.py \
     --policy.tokenize_state=true \
     --policy.knowledge_insulation=false \
     --policy.video_loss_only=false \
-    --policy.video_loss_weight=1 \
+    --policy.video_loss_weight="${VIDEO_LOSS_WEIGHT}" \
     --policy.action_loss_only="${ACTION_LOSS_ONLY}" \
-    --policy.freeze_learnable_tokens=true \
+    --policy.freeze_learnable_tokens="${FREEZE_LEARNABLE_TOKENS}" \
+    --policy.freeze_wan_dit="${FREEZE_WAN_DIT}" \
     --policy.num_learnable_tokens=50 \
     --dataset.type=internvla_a1_5 \
     --dataset.repo_id="${DATASET_REPO_ID}" \

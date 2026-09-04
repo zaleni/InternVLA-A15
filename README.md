@@ -97,6 +97,107 @@ This guide walks through the complete pipeline: download dataset -> convert to L
 
 Benchmark InternVLA-A1.5 on RoboTwin 2.0 with the [RoboTwin 2.0 Fine-tuning Tutorial](tutorials/finetune_internvla_a1_5_with_robotwin.md) and the [RoboTwin 2.0 Eval Tutorial](evaluation/RoboTwin/README.md).
 
+### Using an AHA-WAM Video Expert as the foresight teacher
+
+The training-only WAN branch can load the Video Expert from a released AHA-WAM
+checkpoint. AHA-WAM checkpoints store it under `mot/mixtures.video.*`; the
+loader detects that format, drops the ActionDiT/editor weights, validates every
+Video Expert parameter name and shape, and enables AHA-WAM's frame-causal
+attention and clean-first-latent timestep semantics.
+
+For distributed training, first extract a compact Video Expert checkpoint so
+that every rank does not load the unused AHA-WAM action weights:
+
+```bash
+python util_scripts/extract_aha_wan_video_expert.py \
+    --checkpoint /path/to/aha_wam_step.pt \
+    --wan-config-dir "${HF_HOME}/hub/Wan2.2-TI2V-5B" \
+    --output /path/to/aha_wan_video_expert.pt
+```
+
+The launchers keep the checkpoint, architecture config, and VAE paths separate.
+For RoboTwin, the dedicated wrapper supplies the required AHA teacher settings
+and follows the original RoboTwin fine-tuning configuration while unfreezing
+the foresight/context adapter needed to learn AHA's conditioning distribution.
+The AHA Video Expert itself stays frozen. By default it uses all 100 repos under
+`/data/jjhao/data/robotwin`: clean_50 plus randomized_500 for 50 tasks, totaling
+27,500 episodes.
+
+The dataset transform can read each repo's `meta/annotations.jsonl` and use the
+subtask for the segment containing the current frame as language supervision.
+For the paired RoboTwin Wan2.2/AHA experiments below this is deliberately
+disabled (`USE_SUBTASK_ANNOTATIONS=false`) so subtask supervision is not an
+additional experimental variable.
+
+```bash
+bash launch/internvla_a15_finetune_robotwin_aha_teacher.sh
+```
+
+This uses
+`/data/jjhao/data/model/AHA-WAM-RoboTwin2.0/robotwin_ahawam_video_expert.pt`
+by default; a positional path still overrides it.
+
+The matching original-Wan2.2 baseline is:
+
+```bash
+bash launch/internvla_a15_finetune_robotwin_wan22_baseline.sh
+```
+
+Both wrappers default to the same local A1.5 pretrain checkpoint, all 27,500
+RoboTwin episodes, 2 nodes x 8 GPUs, batch size 8 per GPU, and 60,000 optimizer
+steps. They also share LR `5e-5`, 2,000 warmup steps, cosine decay to `5e-6`,
+seed 42, action/video loss weights, normalization statistics, and checkpoint
+frequency. The intended teacher-specific differences are that the baseline
+uses standard Wan2.2 semantics and freezes the original foresight tokens,
+whereas the AHA run uses AHA attention/timestep semantics and trains the
+foresight/context adapter; both video DiTs stay frozen.
+
+As with the AC-One launcher, submit one command to a 2-node x 8-GPU platform
+job. The platform runs it on both nodes and injects `MASTER_ADDR`,
+`MASTER_PORT`, `SENSECORE_PYTORCH_NNODES`, and
+`SENSECORE_PYTORCH_NODE_RANK`. The baseline task command is:
+
+```bash
+bash /data/jjhao/InternVLA-A-series/launch/internvla_a15_finetune_robotwin_wan22_baseline.sh
+```
+
+The AHA task command is:
+
+```bash
+bash /data/jjhao/InternVLA-A-series/launch/internvla_a15_finetune_robotwin_aha_teacher.sh
+```
+
+Do not submit separate node-0/node-1 commands; node rank and rendezvous values
+come from the platform job environment.
+
+To smoke-test a shorter run while still sampling all 27,500 episodes:
+
+```bash
+STEPS=100 \
+WANDB_ENABLE=false \
+bash launch/internvla_a15_finetune_robotwin_aha_teacher.sh \
+    /path/to/another_aha_wan_video_expert.pt
+```
+
+The default dataset root is `/data/jjhao/data`; override `DATASET_ROOT`,
+`WAN_CONFIG_PATH`, `WAN_VAE_PATH`, or the other launcher environment variables
+when your local layout differs. Set `DRY_RUN=true` to validate and print the
+resolved command without starting training.
+
+A raw AHA-WAM `.pt` can also be passed directly as `WAN_CHECKPOINT_PATH`, but
+the extracted checkpoint is more memory- and I/O-efficient. This integration
+replaces only the frozen video auxiliary teacher: normal action inference still
+uses InternVLA's Action Expert and does not run WAN. The policy checkpoint does
+not embed the frozen teacher, so the external checkpoint, config, and VAE must
+remain available when resuming video-supervised training.
+
+For AC-One, the dedicated wrapper sets all required teacher flags:
+
+```bash
+bash launch/internvla_a15_finetune_acone_aha_teacher.sh \
+    /path/to/aha_wan_video_expert.pt
+```
+
 ---
 
 ## Evaluation & Inference

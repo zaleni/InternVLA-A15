@@ -24,11 +24,17 @@ class InternVLAA15DatasetConfig(DatasetConfig):
     width: int = 224
     max_state_dim: int = 32
     max_action_dim: int = 32
-    tokenize_state: bool = False
+    # Keep this aligned with InternVLAA15Config.tokenize_state. A mismatch can
+    # silently remove state from both the language prefix and the action suffix.
+    tokenize_state: bool = True
     max_prompt_length: int = 650
     mode: str = "train"
     chunk_size: int = 50
     use_fast_action_tokens: bool = True
+    # Subtask annotations are optional language supervision. Keep the global
+    # default for backwards compatibility, while comparison launchers can turn
+    # them off to isolate the video-teacher change.
+    use_subtask_annotations: bool = True
     num_video_frames: int = 4
     video_height: int = 224
     video_width: int = 224
@@ -73,6 +79,9 @@ class InternVLAA15DatasetConfig(DatasetConfig):
         elif self.action_mode == "abs" and has_delta:
             logging.info("action_mode='abs' -> Removing DeltaActionTransformFn")
             inputs = [t for t in inputs if not isinstance(t, DeltaActionTransformFn)]
+
+        if not self.use_subtask_annotations:
+            inputs = [t for t in inputs if not isinstance(t, LoadActionTextFromJsonlTransformFn)]
 
         processor = InternVLAA15ChatProcessorTransformFn(
             tokenize_state=self.tokenize_state,
@@ -333,6 +342,10 @@ class InternVLAA15Config(PreTrainedConfig):
     wan_config_path: str = f"{HF_HOME}/hub/Wan2.2-TI2V-5B"
     vae_path: str = f"{HF_HOME}/hub/Wan2.2-TI2V-5B/Wan2.2_VAE.pth"
     video_precision: str = "bfloat16"
+    # "auto" selects AHA-WAM semantics for raw/converted AHA checkpoints and
+    # legacy InternVLA/Wan2.2 semantics otherwise. Set explicitly when using a
+    # raw Video Expert state dict that has no format metadata.
+    wan_teacher_mode: str = "auto"  # "auto", "wan22", or "aha_wam"
 
     freeze_wan_dit: bool = True
     num_video_frames: int = 4
@@ -366,6 +379,11 @@ class InternVLAA15Config(PreTrainedConfig):
             )
         if self.inference_backend == "optimized" and not self.action_loss_only:
             raise ValueError("inference_backend='optimized' requires action_loss_only=True")
+        if self.wan_teacher_mode not in {"auto", "wan22", "aha_wam"}:
+            raise ValueError(
+                "wan_teacher_mode must be 'auto', 'wan22', or 'aha_wam', "
+                f"got {self.wan_teacher_mode!r}"
+            )
 
     def validate_features(self) -> None:
         """Validate and set up input/output features."""

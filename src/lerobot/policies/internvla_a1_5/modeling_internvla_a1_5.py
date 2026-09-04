@@ -90,6 +90,66 @@ def create_sinusoidal_pos_embedding(
     return torch.cat([torch.sin(sin_input), torch.cos(sin_input)], dim=1)
 
 
+def resolve_wan_teacher_mode(requested_mode: str, checkpoint_format: str) -> str:
+    """Resolve the Video Expert forward semantics from config and checkpoint provenance."""
+    if requested_mode != "auto":
+        return requested_mode
+    return "aha_wam" if checkpoint_format.startswith("aha_wam") else "wan22"
+
+
+def build_per_frame_causal_mask(
+    num_frames: int, tokens_per_frame: int, device: torch.device
+) -> torch.Tensor:
+    """Return AHA-WAM's frame-causal, within-frame-bidirectional attention mask."""
+    if num_frames <= 0 or tokens_per_frame <= 0:
+        raise ValueError(
+            "num_frames and tokens_per_frame must be positive, "
+            f"got {num_frames} and {tokens_per_frame}"
+        )
+    frame_mask = torch.tril(
+        torch.ones((num_frames, num_frames), dtype=torch.bool, device=device)
+    )
+    return frame_mask.repeat_interleave(tokens_per_frame, dim=0).repeat_interleave(
+        tokens_per_frame, dim=1
+    )
+
+
+def future_video_mse_loss(
+    video_pred: torch.Tensor,
+    video_target: torch.Tensor,
+    sample_weights: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Compute (optionally sample-weighted) MSE on future video latents only."""
+    if video_pred.shape != video_target.shape:
+        raise ValueError(
+            f"video prediction/target shape mismatch: {video_pred.shape} vs {video_target.shape}"
+        )
+    if video_pred.ndim != 5:
+        raise ValueError(
+            "video prediction and target must be [B, C, T, H, W], "
+            f"got {tuple(video_pred.shape)}"
+        )
+    if video_pred.shape[2] <= 1:
+        raise ValueError(
+            "video auxiliary loss needs at least one observed and one future latent frame"
+        )
+    loss_per_sample = F.mse_loss(
+        video_pred[:, :, 1:].float(),
+        video_target[:, :, 1:].float(),
+        reduction="none",
+    ).mean(dim=(1, 2, 3, 4))
+    if sample_weights is not None:
+        if sample_weights.shape != loss_per_sample.shape:
+            raise ValueError(
+                "video sample weights must have shape [B], "
+                f"got {tuple(sample_weights.shape)} for batch {loss_per_sample.shape[0]}"
+            )
+        loss_per_sample = loss_per_sample * sample_weights.to(
+            device=loss_per_sample.device, dtype=loss_per_sample.dtype
+        )
+    return loss_per_sample.mean()
+
+
 def sample_beta(alpha, beta, bsize, device):
     alpha_t = torch.as_tensor(alpha, dtype=torch.float32, device=device)
     beta_t = torch.as_tensor(beta, dtype=torch.float32, device=device)
@@ -580,6 +640,21 @@ class InternVLAA15(nn.Module):
                 config_path=config.wan_config_path,
                 precision=config.video_precision,
             )
+            self.wan_teacher_mode = resolve_wan_teacher_mode(
+                config.wan_teacher_mode,
+                self.wan_video_model.checkpoint_format,
+            )
+            logging.info(
+                "WAN teacher mode resolved to %s (checkpoint format=%s)",
+                self.wan_teacher_mode,
+                self.wan_video_model.checkpoint_format,
+            )
+            if self.wan_teacher_mode == "aha_wam" and config.freeze_learnable_tokens:
+                logging.warning(
+                    "AHA-WAM teacher selected while foresight tokens and the WAN context "
+                    "projection are frozen; set freeze_learnable_tokens=false when adapting "
+                    "an existing InternVLA checkpoint to this teacher"
+                )
             wan_dim = self.wan_video_model.wan_model.dim
             self.learnable_to_wan_proj = nn.Linear(action_expert_hidden_size, wan_dim)
             self.fm_video_scheduler = FlowMatchScheduler(
@@ -975,8 +1050,10 @@ class InternVLAA15(nn.Module):
         return embs, pad_masks, att_masks
 
     def get_learnable_token_output(self, suffix_out):
-        start = 1  # skip state token
-        end = 1 + self.config.num_learnable_tokens
+        # State lives in the suffix only when it was not tokenized into the
+        # language prompt. With tokenize_state=True, learnable tokens start at 0.
+        start = 0 if self.config.tokenize_state else 1
+        end = start + self.config.num_learnable_tokens
         return suffix_out[:, start:end]
 
     # ------------------------------------------------------------------
@@ -1266,6 +1343,15 @@ class InternVLAA15(nn.Module):
         # Patch embedding
         x = wan.patch_embedding(noisy_video_latent)
         grid_sizes = self._wan_grid_sizes.unsqueeze(0).expand(B, -1).to(device)
+        actual_grid_size = torch.tensor(x.shape[2:], dtype=torch.long, device=device)
+        if not torch.equal(grid_sizes[0], actual_grid_size):
+            raise ValueError(
+                "WAN patch grid does not match configured video dimensions: "
+                f"configured={tuple(grid_sizes[0].tolist())}, "
+                f"actual={tuple(actual_grid_size.tolist())}"
+            )
+        num_frames = int(x.shape[2])
+        tokens_per_frame = int(x.shape[3] * x.shape[4])
         x = x.flatten(2).transpose(1, 2)
         seq_len = x.shape[1]
         seq_lens = torch.full((B,), seq_len, dtype=torch.long, device=device)
@@ -1274,6 +1360,15 @@ class InternVLAA15(nn.Module):
         t_vid = video_timestep
         if t_vid.dim() == 1:
             t_vid = t_vid.unsqueeze(1).expand(B, seq_len)
+        elif t_vid.shape != (B, seq_len):
+            raise ValueError(
+                f"video timestep must be [B] or [B, L], got {tuple(t_vid.shape)}"
+            )
+        if self.wan_teacher_mode == "aha_wam":
+            # AHA-WAM uses a clean timestep for the observed first latent and
+            # the sampled diffusion timestep for all future latents.
+            t_vid = t_vid.clone()
+            t_vid[:, :tokens_per_frame] = 0
         with torch.amp.autocast("cuda", dtype=torch.float32):
             e = wan.time_embedding(
                 sinusoidal_embedding_1d(wan.freq_dim, t_vid.flatten())
@@ -1285,6 +1380,13 @@ class InternVLAA15(nn.Module):
 
         # Use projected learnable tokens as context (skip text_embedding)
         context = wan_context
+        self_attn_mask = None
+        if self.wan_teacher_mode == "aha_wam":
+            self_attn_mask = build_per_frame_causal_mask(
+                num_frames=num_frames,
+                tokens_per_frame=tokens_per_frame,
+                device=device,
+            )
 
         kwargs = dict(
             e=e0,
@@ -1293,6 +1395,7 @@ class InternVLAA15(nn.Module):
             freqs=wan.freqs,
             context=context,
             context_lens=None,
+            self_attn_mask=self_attn_mask,
         )
 
         for block in wan.blocks:
@@ -1349,16 +1452,24 @@ class InternVLAA15(nn.Module):
         noisy_latent = clean_latent * (1 - sigma) + video_noise * sigma
         noisy_latent[:, :, 0:1] = cond_latent
 
-        # Target velocity
+        # Target velocity. The observed first latent is excluded from the loss
+        # below rather than zeroed and included in the reduction.
         video_target = video_noise - clean_latent
-        video_target[:, :, 0:1] = 0
 
         # WAN forward
         with torch.amp.autocast("cuda", dtype=wan_dtype):
             video_pred = self.wan_dit_forward(noisy_latent, wan_context, video_t)
 
-        video_pred[:, :, 0:1] = 0
-        return F.mse_loss(video_pred.float(), video_target.float(), reduction="mean")
+        sample_weights = None
+        if self.wan_teacher_mode == "aha_wam":
+            # Match AHA-WAM's training objective: it reweights each example by
+            # its sampled flow-matching timestep. The weights are normalized to
+            # mean one, so VIDEO_LOSS_WEIGHT retains its overall interpretation.
+            sample_weights = self.fm_video_scheduler.linear_timesteps_weights[
+                timestep_id
+            ].to(device=video_pred.device, dtype=torch.float32)
+
+        return future_video_mse_loss(video_pred, video_target, sample_weights)
 
 
 # ======================================================================
@@ -1412,6 +1523,8 @@ class InternVLAA15Policy(PreTrainedPolicy):
         lines.append(f"  - Learnable tokens    : {self.config.num_learnable_tokens}")
         lines.append(f"  - Knowledge insulation: {self.config.knowledge_insulation}")
         lines.append(f"  - Inference backend   : {self.config.inference_backend}")
+        if hasattr(self.model, "wan_teacher_mode"):
+            lines.append(f"  - WAN teacher mode    : {self.model.wan_teacher_mode}")
         lines.append(f"  - Freeze WAN DiT      : {self.config.freeze_wan_dit}")
         lines.append("=" * 60)
         return "\n".join(lines)
@@ -1435,6 +1548,36 @@ class InternVLAA15Policy(PreTrainedPolicy):
                 if key == "model.wan_video_model" or key.startswith("model.wan_video_model."):
                     del metadata[key]
         return state
+
+    def load_state_dict(self, state_dict, strict: bool = True, assign: bool = False):
+        """Load student weights without replacing the externally loaded video teacher.
+
+        Legacy A1.5 checkpoints contain ``model.wan_video_model.*`` tensors, while
+        current checkpoints intentionally exclude them.  The configured WAN/AHA
+        teacher is loaded during model construction in both cases and is the
+        authoritative source.  Injecting its current tensors here prevents legacy
+        checkpoint keys from silently overwriting that teacher and also makes a
+        compact student-only checkpoint complete under strict loading.
+        """
+        current_state = super().state_dict()
+        teacher_state = {
+            key: value
+            for key, value in current_state.items()
+            if key.startswith(self._checkpoint_excluded_prefixes)
+        }
+        if teacher_state:
+            checkpoint_teacher_count = sum(
+                key.startswith(self._checkpoint_excluded_prefixes) for key in state_dict
+            )
+            state_dict = state_dict.copy()
+            state_dict.update(teacher_state)
+            logging.info(
+                "Preserving %d externally loaded WAN teacher tensors while loading "
+                "the student checkpoint (%d colliding checkpoint tensors ignored)",
+                len(teacher_state),
+                checkpoint_teacher_count,
+            )
+        return super().load_state_dict(state_dict, strict=strict, assign=assign)
 
     def get_optim_params(self) -> dict:
         return self.parameters()
