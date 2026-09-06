@@ -12,7 +12,7 @@ if [[ -z "${CONDA_ROOT}" ]]; then
         CONDA_ROOT="/data/jjhao/miniconda3"
     fi
 fi
-CONDA_ENV="${CONDA_ENV:-internvla_a1_5}"
+CONDA_ENV="${CONDA_ENV:-internvla_robotwin}"
 if [[ "${SKIP_CONDA_ACTIVATE:-false}" != "true" ]]; then
     if [[ ! -f "${CONDA_ROOT}/etc/profile.d/conda.sh" ]]; then
         echo "Conda initialization script not found: ${CONDA_ROOT}/etc/profile.d/conda.sh" >&2

@@ -69,6 +69,11 @@ Override `AHA_CKPT`, `WAN22_CKPT`, `ROBOTWIN_ROOT`, `NUM_EPISODES`, or
 resumable and writes per-task logs and a run configuration into each output
 directory.
 
+The launcher follows the Muon evaluation environment: it sources Conda from
+`/mnt/data/jiangjiahao/miniconda3` when available and activates
+`internvla_robotwin`. Override `CONDA_ROOT` or `CONDA_ENV` if the inference
+machine uses different names.
+
 To summarize a completed evaluation directory:
 
 ```bash
