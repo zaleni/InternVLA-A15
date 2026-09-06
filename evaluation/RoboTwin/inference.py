@@ -277,12 +277,22 @@ def load_policy(args: argparse.Namespace, dtype: torch.dtype):
     configured_vlm = Path(str(config.vlm_model_name_or_path)).expanduser()
     if configured_vlm.is_absolute() and not _is_qwen_metadata_dir(configured_vlm):
         candidates = []
+        resolved = None
         if os.environ.get("INTERNVLA_VLM_PATH"):
-            candidates.append(Path(os.environ["INTERNVLA_VLM_PATH"]).expanduser())
-        candidates.append(Path(str(configured_vlm).replace(
-            "/data/jjhao/", "/mnt/data/jiangjiahao/", 1
-        )))
-        resolved = next((path for path in candidates if _is_qwen_metadata_dir(path)), None)
+            explicit = Path(os.environ["INTERNVLA_VLM_PATH"]).expanduser()
+            # An explicitly supplied snapshot is authoritative.  This also
+            # matches Muon's offline behavior and avoids converting it to a
+            # Hub repo id when one optional metadata file is absent.
+            if explicit.is_dir():
+                logging.info("Using explicit local VLM snapshot: %s", explicit)
+                resolved = explicit
+            else:
+                candidates.append(explicit)
+        if resolved is None:
+            candidates.append(Path(str(configured_vlm).replace(
+                "/data/jjhao/", "/mnt/data/jiangjiahao/", 1
+            )))
+            resolved = next((path for path in candidates if _is_qwen_metadata_dir(path)), None)
         if resolved is not None:
             logging.info("Remapping checkpoint VLM path %s -> %s", configured_vlm, resolved)
             config.vlm_model_name_or_path = str(resolved)
