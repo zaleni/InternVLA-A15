@@ -99,6 +99,41 @@ TASK_NAMES = [
 ]
 
 
+def _is_qwen_metadata_dir(path: Path) -> bool:
+    """Match Muon's check for a usable local Qwen metadata directory."""
+    has_tokenizer = (path / "tokenizer.json").is_file() or (
+        (path / "vocab.json").is_file() and (path / "merges.txt").is_file()
+    )
+    has_processor = (path / "preprocessor_config.json").is_file() or (
+        (path / "processor_config.json").is_file()
+    )
+    return (
+        path.is_dir()
+        and (path / "config.json").is_file()
+        and (path / "tokenizer_config.json").is_file()
+        and has_tokenizer
+        and has_processor
+    )
+
+
+def _find_cached_qwen_metadata(repo_id: str) -> Path | None:
+    cache_root = Path(
+        os.environ.get("HF_HUB_CACHE", "")
+        or os.environ.get("HUGGINGFACE_HUB_CACHE", "")
+        or (Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub")
+    ).expanduser()
+    repo_cache = cache_root / f"models--{repo_id.replace('/', '--')}"
+    snapshots = repo_cache / "snapshots"
+    if not snapshots.is_dir():
+        return None
+    candidates = sorted(
+        (path for path in snapshots.iterdir() if path.is_dir()),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    return next((path.resolve() for path in candidates if _is_qwen_metadata_dir(path)), None)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run RoboTwin evaluation for InternVLA-A1.5 policies.")
     parser.add_argument("--ckpt-path", type=Path, required=True)
@@ -240,19 +275,21 @@ def load_policy(args: argparse.Namespace, dtype: torch.dtype):
     # (/data/jjhao/...). Resolve those paths on the inference machine before
     # Transformers interprets them as Hugging Face repo IDs.
     configured_vlm = Path(str(config.vlm_model_name_or_path)).expanduser()
-    if configured_vlm.is_absolute() and not configured_vlm.exists():
+    if configured_vlm.is_absolute() and not _is_qwen_metadata_dir(configured_vlm):
         candidates = []
         if os.environ.get("INTERNVLA_VLM_PATH"):
             candidates.append(Path(os.environ["INTERNVLA_VLM_PATH"]).expanduser())
         candidates.append(Path(str(configured_vlm).replace(
             "/data/jjhao/", "/mnt/data/jiangjiahao/", 1
         )))
-        resolved = next((path for path in candidates if path.is_dir()), None)
+        resolved = next((path for path in candidates if _is_qwen_metadata_dir(path)), None)
         if resolved is not None:
             logging.info("Remapping checkpoint VLM path %s -> %s", configured_vlm, resolved)
             config.vlm_model_name_or_path = str(resolved)
         else:
-            fallback = os.environ.get("INTERNVLA_VLM_PATH") or "Qwen/Qwen3.5-2B"
+            fallback = _find_cached_qwen_metadata("Qwen/Qwen3.5-2B") or (
+                os.environ.get("INTERNVLA_VLM_PATH") or "Qwen/Qwen3.5-2B"
+            )
             logging.warning(
                 "Checkpoint VLM path %s is unavailable; falling back to %s. "
                 "Set INTERNVLA_VLM_PATH to a local Qwen metadata directory if needed.",
