@@ -36,7 +36,7 @@ OUTPUT_ROOT="${3:-${OUTPUT_ROOT:-${REPO_ROOT}/outputs/robotwin_eval/${MODEL_TAG}
 
 export TASK_CONFIG
 export GPU_IDS="${GPU_IDS:-0,1,2,3,4,5,6,7}"
-export MAX_JOBS_PER_GPU="${MAX_JOBS_PER_GPU:-1}"
+export MAX_JOBS_PER_GPU="${MAX_JOBS_PER_GPU:-3}"
 export NUM_EPISODES="${NUM_EPISODES:-100}"
 export SEED="${SEED:-42}"
 export STATS_KEY="${STATS_KEY:-aloha}"
