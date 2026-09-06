@@ -236,6 +236,30 @@ def load_policy(args: argparse.Namespace, dtype: torch.dtype):
         raise ValueError(f"Checkpoint policy.type must be 'internvla_a1_5', got {config.type!r}.")
 
     config.action_loss_only = True
+    # Training checkpoints may contain absolute paths from the Muon machine
+    # (/data/jjhao/...). Resolve those paths on the inference machine before
+    # Transformers interprets them as Hugging Face repo IDs.
+    configured_vlm = Path(str(config.vlm_model_name_or_path)).expanduser()
+    if configured_vlm.is_absolute() and not configured_vlm.exists():
+        candidates = []
+        if os.environ.get("INTERNVLA_VLM_PATH"):
+            candidates.append(Path(os.environ["INTERNVLA_VLM_PATH"]).expanduser())
+        candidates.append(Path(str(configured_vlm).replace(
+            "/data/jjhao/", "/mnt/data/jiangjiahao/", 1
+        )))
+        resolved = next((path for path in candidates if path.is_dir()), None)
+        if resolved is not None:
+            logging.info("Remapping checkpoint VLM path %s -> %s", configured_vlm, resolved)
+            config.vlm_model_name_or_path = str(resolved)
+        else:
+            fallback = os.environ.get("INTERNVLA_VLM_PATH") or "Qwen/Qwen3.5-2B"
+            logging.warning(
+                "Checkpoint VLM path %s is unavailable; falling back to %s. "
+                "Set INTERNVLA_VLM_PATH to a local Qwen metadata directory if needed.",
+                configured_vlm,
+                fallback,
+            )
+            config.vlm_model_name_or_path = fallback
     config.inference_backend = args.inference_backend
     config.device = "cuda" if torch.cuda.is_available() else "cpu"
 

@@ -45,6 +45,9 @@ if [[ -z "${HF_HOME:-}" ]]; then
         export HF_HOME="/data/jjhao/huggingface"
     fi
 fi
+if [[ -z "${INTERNVLA_VLM_PATH:-}" && -d "/mnt/data/jiangjiahao/data/model/Qwen3.5-2B-Action" ]]; then
+    export INTERNVLA_VLM_PATH="/mnt/data/jiangjiahao/data/model/Qwen3.5-2B-Action"
+fi
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 export PYTHONUNBUFFERED=1
 export GPU_IDS="${GPU_IDS:-${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}}"
