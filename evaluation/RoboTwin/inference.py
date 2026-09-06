@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import logging
+import os
 import shutil
 import sys
 import traceback
@@ -17,7 +18,9 @@ import torch
 from omegaconf import OmegaConf
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-ROBOTWIN_ROOT = REPO_ROOT / "third_party" / "RoboTwin"
+ROBOTWIN_ROOT = Path(
+    os.environ.get("ROBOTWIN_ROOT", str(REPO_ROOT / "third_party" / "RoboTwin"))
+).expanduser().resolve()
 
 if str(REPO_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "src"))

@@ -44,6 +44,31 @@ For `internvla_a1_5`, the inference entry defaults to `--action-loss-only`, whic
 
 Replay videos are written as `success_<id>.mp4` or `failure_<id>.mp4`.
 
+For four independent 8-GPU evaluation groups (AHA/Wan2.2 × clean/randomized),
+use `eval_8gpu_group.sh`. It runs all 50 tasks with one RoboTwin process per
+GPU and uses an inference horizon of 25 by default. On the inference machine,
+the two checkpoint defaults are:
+
+```text
+/mnt/data/jiangjiahao/data/model/zaleni/AHA-A1
+/mnt/data/jiangjiahao/data/model/zaleni/Internvla-A1_5-Robotwin-60k
+```
+
+Run the four groups independently (one command on each 8-GPU machine):
+
+```bash
+bash evaluation/RoboTwin/eval_8gpu_group.sh aha demo_clean
+bash evaluation/RoboTwin/eval_8gpu_group.sh aha demo_randomized
+bash evaluation/RoboTwin/eval_8gpu_group.sh wan22 demo_clean
+bash evaluation/RoboTwin/eval_8gpu_group.sh wan22 demo_randomized
+```
+
+Outputs are separated under `outputs/robotwin_eval/{aha,wan22}_60k/{task_config}`.
+Override `AHA_CKPT`, `WAN22_CKPT`, `ROBOTWIN_ROOT`, `NUM_EPISODES`, or
+`INFER_HORIZON` through environment variables when needed. The scheduler is
+resumable and writes per-task logs and a run configuration into each output
+directory.
+
 To summarize a completed evaluation directory:
 
 ```bash
