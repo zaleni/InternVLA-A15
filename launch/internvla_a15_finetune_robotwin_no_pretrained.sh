@@ -11,8 +11,8 @@ export USE_SUBTASK_ANNOTATIONS=false
 
 # Official RoboTwin 2.0 scale: 24 GPUs, batch 16/GPU, 100k steps.
 export PROC_PER_NODE="${PROC_PER_NODE:-${SENSECORE_ACCELERATE_DEVICE_COUNT:-8}}"
-export NODE_COUNT="${NODE_COUNT:-${SENSECORE_PYTORCH_NNODES:-${WORLD_SIZE:-3}}}"
-export BATCH_SIZE="${BATCH_SIZE:-16}"
+export NODE_COUNT="${NODE_COUNT:-${SENSECORE_PYTORCH_NNODES:-${WORLD_SIZE:-6}}}"
+export BATCH_SIZE="${BATCH_SIZE:-8}"
 export STEPS="${STEPS:-100000}"
 export OPTIMIZER_LR="${OPTIMIZER_LR:-1e-4}"
 export SCHEDULER_WARMUP_STEPS="${SCHEDULER_WARMUP_STEPS:-2000}"
@@ -20,7 +20,7 @@ export SCHEDULER_DECAY_STEPS="${SCHEDULER_DECAY_STEPS:-140000}"
 export SCHEDULER_DECAY_LR="${SCHEDULER_DECAY_LR:-5e-6}"
 export SAVE_FREQ="${SAVE_FREQ:-50000}"
 export RUN_TAG="${RUN_TAG:-no-internvla-pretrain}"
-export GRADIENT_CHECKPOINTING=true
+export GRADIENT_CHECKPOINTING=false
 
 echo "[RoboTwin ablation] InternVLA pretrained checkpoint: disabled"
 echo "[RoboTwin ablation] Qwen VLM base: ${INTERNVLA_VLM_PATH:-default}"
