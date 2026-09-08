@@ -37,7 +37,9 @@ fi
 
 # Student checkpoint and frozen video teacher.
 POLICY="internvla_a1_5"
-PRETRAINED_PATH="${PRETRAINED_PATH:-/data/jjhao/data/model/a1.5_0600000_pretrained_model}"
+# Use '-' (rather than ':-') so an explicit empty value means initialize from
+# the base VLM without loading an InternVLA policy checkpoint.
+PRETRAINED_PATH="${PRETRAINED_PATH-/data/jjhao/data/model/a1.5_0600000_pretrained_model}"
 WAN_BASE_PATH="${WAN_BASE_PATH:-${WAN_PATH:-${HF_HOME}/hub/Wan2.2-TI2V-5B}}"
 WAN_CHECKPOINT_PATH="${WAN_CHECKPOINT_PATH:-${WAN_BASE_PATH}}"
 WAN_CONFIG_PATH="${WAN_CONFIG_PATH:-${WAN_BASE_PATH}}"
@@ -45,6 +47,8 @@ WAN_VAE_PATH="${WAN_VAE_PATH:-${WAN_BASE_PATH}/Wan2.2_VAE.pth}"
 WAN_TEACHER_MODE="${WAN_TEACHER_MODE:-auto}"
 
 ACTION_LOSS_ONLY="${ACTION_LOSS_ONLY:-false}"
+ENABLE_VQA_LOSS="${ENABLE_VQA_LOSS:-true}"
+USE_FAST_ACTION_TOKENS="${USE_FAST_ACTION_TOKENS:-true}"
 FREEZE_WAN_DIT="${FREEZE_WAN_DIT:-true}"
 FREEZE_LEARNABLE_TOKENS="${FREEZE_LEARNABLE_TOKENS:-true}"
 VIDEO_LOSS_WEIGHT="${VIDEO_LOSS_WEIGHT:-1}"
@@ -130,15 +134,19 @@ fi
 BATCH_SIZE="${BATCH_SIZE:-8}"
 STEPS="${STEPS:-60000}"
 SAVE_FREQ="${SAVE_FREQ:-20000}"
-LOG_FREQ="${LOG_FREQ:-200}"
-MODULE_GRAD_NORM_FREQ="${MODULE_GRAD_NORM_FREQ:-0}"
-NUM_WORKERS="${NUM_WORKERS:-8}"
+LOG_FREQ="${LOG_FREQ:-100}"
+MODULE_GRAD_NORM_FREQ="${MODULE_GRAD_NORM_FREQ:-250}"
+NUM_WORKERS="${NUM_WORKERS:-12}"
 GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:-false}"
+OPTIMIZER_LR="${OPTIMIZER_LR:-5e-5}"
+SCHEDULER_WARMUP_STEPS="${SCHEDULER_WARMUP_STEPS:-2000}"
+SCHEDULER_DECAY_STEPS="${SCHEDULER_DECAY_STEPS:-${STEPS}}"
+SCHEDULER_DECAY_LR="${SCHEDULER_DECAY_LR:-5e-6}"
 WANDB_ENABLE="${WANDB_ENABLE:-true}"
 WANDB_MODE="${WANDB_MODE:-offline}"
 DRY_RUN="${DRY_RUN:-false}"
 
-for boolean_name in ACTION_LOSS_ONLY FREEZE_WAN_DIT FREEZE_LEARNABLE_TOKENS \
+for boolean_name in ACTION_LOSS_ONLY ENABLE_VQA_LOSS USE_FAST_ACTION_TOKENS FREEZE_WAN_DIT FREEZE_LEARNABLE_TOKENS \
     USE_EXTERNAL_STATS USE_SUBTASK_ANNOTATIONS DROP_INCOMPLETE_ACTION_CHUNKS DIST_LOADING \
     GRADIENT_CHECKPOINTING WANDB_ENABLE DRY_RUN; do
     boolean_value="${!boolean_name}"
@@ -161,9 +169,11 @@ REQUIRED_FILES=(
     "${INTERNVLA_VLM_PATH}/config.json"
     "${INTERNVLA_FAST_TOKENIZER_PATH}/tokenizer.json"
 )
-if [[ -d "${PRETRAINED_PATH}" ]]; then
+PRETRAINED_ARGS=()
+if [[ -n "${PRETRAINED_PATH}" && -d "${PRETRAINED_PATH}" ]]; then
+    PRETRAINED_ARGS+=(--policy.pretrained_path="${PRETRAINED_PATH}")
     REQUIRED_FILES+=("${PRETRAINED_PATH}/config.json" "${PRETRAINED_PATH}/model.safetensors")
-elif [[ "${HF_HUB_OFFLINE}" == "1" ]]; then
+elif [[ -n "${PRETRAINED_PATH}" && "${HF_HUB_OFFLINE}" == "1" ]]; then
     echo "PRETRAINED_PATH is not a local directory while HF_HUB_OFFLINE=1: ${PRETRAINED_PATH}" >&2
     exit 1
 fi
@@ -263,7 +273,7 @@ TRAIN_ARGS=(
     --num_workers="${NUM_WORKERS}"
     --policy.type="${POLICY}"
     --policy.repo_id="lerobot_lab/${POLICY}"
-    --policy.pretrained_path="${PRETRAINED_PATH}"
+    "${PRETRAINED_ARGS[@]}"
     --policy.vlm_model_name_or_path="${INTERNVLA_VLM_PATH}"
     --policy.wan_checkpoint_path="${WAN_CHECKPOINT_PATH}"
     --policy.wan_config_path="${WAN_CONFIG_PATH}"
@@ -272,13 +282,13 @@ TRAIN_ARGS=(
     --policy.push_to_hub=false
     --policy.gradient_checkpointing="${GRADIENT_CHECKPOINTING}"
     --policy.dtype=bfloat16
-    --policy.optimizer_lr=5e-5
-    --policy.scheduler_warmup_steps=2000
-    --policy.scheduler_decay_steps="${STEPS}"
-    --policy.scheduler_decay_lr=5e-6
+    --policy.optimizer_lr="${OPTIMIZER_LR}"
+    --policy.scheduler_warmup_steps="${SCHEDULER_WARMUP_STEPS}"
+    --policy.scheduler_decay_steps="${SCHEDULER_DECAY_STEPS}"
+    --policy.scheduler_decay_lr="${SCHEDULER_DECAY_LR}"
     --policy.freeze_vision_encoder=false
     --policy.train_expert_only=false
-    --policy.enable_vqa_loss=true
+    --policy.enable_vqa_loss="${ENABLE_VQA_LOSS}"
     --policy.tokenize_state=true
     --policy.knowledge_insulation=false
     --policy.video_loss_only=false
@@ -297,7 +307,7 @@ TRAIN_ARGS=(
     --dataset.dist_loading="${DIST_LOADING}"
     "${CHUNK_FILTER_ARGS[@]}"
     --dataset.tokenize_state=true
-    --dataset.use_fast_action_tokens=true
+    --dataset.use_fast_action_tokens="${USE_FAST_ACTION_TOKENS}"
     --seed=42
     --batch_size="${BATCH_SIZE}"
     --steps="${STEPS}"
