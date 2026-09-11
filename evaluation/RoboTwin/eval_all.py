@@ -94,6 +94,53 @@ def task_done(args: argparse.Namespace, name: str) -> bool:
     return success + failure == args.num_episodes
 
 
+def write_summary(args: argparse.Namespace, names: list[str]) -> Path:
+    rows: list[tuple[int, str, int, int]] = []
+    for idx, name in enumerate(names):
+        directory = task_dir(args, name)
+        success = len(list(directory.glob("success_*.mp4")))
+        failure = len(list(directory.glob("failure_*.mp4")))
+        if success + failure:
+            rows.append((idx, name, success, success + failure))
+
+    total_success = sum(row[2] for row in rows)
+    total_episodes = sum(row[3] for row in rows)
+    task_rates = [row[2] / row[3] for row in rows]
+    average_rate = sum(task_rates) / len(task_rates) if task_rates else None
+    overall_rate = total_success / total_episodes if total_episodes else None
+
+    def percent(value: float | None) -> str:
+        return "N/A" if value is None else f"{value * 100:.2f}%"
+
+    lines = [
+        f"checkpoint: {args.checkpoint}",
+        f"task_config: {args.task_config}",
+        f"dtype/backend: {args.dtype}/{args.inference_backend}",
+        f"seed/stats: {args.seed}/{args.stats_key}",
+        f"action/horizon: {args.action_mode}/{args.infer_horizon}",
+        f"episodes/task: {args.num_episodes}",
+        f"instruction: {args.instruction_type}",
+        f"completed_tasks: {len(rows)}/{len(names)}",
+        f"average_task_success_rate: {percent(average_rate)}",
+        f"overall_episode_success_rate: {percent(overall_rate)}",
+        f"total_success: {total_success}/{total_episodes}",
+        "",
+        "per_task:",
+    ]
+    completed_by_idx = {row[0]: row for row in rows}
+    for idx, name in enumerate(names):
+        row = completed_by_idx.get(idx)
+        if row is None:
+            lines.append(f"{idx:02d} {name}: N/A (0/0)")
+        else:
+            _, task_name, success, episodes = row
+            lines.append(f"{idx:02d} {task_name}: {success / episodes * 100:.2f}% ({success}/{episodes})")
+
+    summary_path = args.output_root / "summary.txt"
+    summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return summary_path
+
+
 def build_command(args: argparse.Namespace, idx: int, name: str) -> list[str]:
     return [
         sys.executable,
@@ -189,6 +236,8 @@ def main() -> int:
         else:
             pending.put((idx, name))
     if pending.empty():
+        summary_path = write_summary(args, names)
+        print(f"summary: {summary_path}", flush=True)
         print("All tasks are already complete.", flush=True)
         return 0
 
@@ -282,6 +331,8 @@ def main() -> int:
             stop.wait(args.stagger_seconds)
     for thread in threads:
         thread.join()
+    summary_path = write_summary(args, names)
+    print(f"summary: {summary_path}", flush=True)
     return 130 if stop.is_set() else (0 if pending.empty() else 1)
 
 

@@ -66,8 +66,10 @@ bash evaluation/RoboTwin/eval_8gpu_group.sh wan22 demo_randomized
 Outputs are separated under `outputs/robotwin_eval/{aha,wan22}_60k/{task_config}`.
 Override `AHA_CKPT`, `WAN22_CKPT`, `ROBOTWIN_ROOT`, `NUM_EPISODES`, or
 `INFER_HORIZON` through environment variables when needed. The scheduler is
-resumable and writes per-task logs and a run configuration into each output
-directory.
+resumable and writes per-task logs, a run configuration, and `summary.txt` into
+each output directory. The summary includes total and per-task success rates;
+tasks without any replay videos are reported as `N/A` rather than counted as
+failures.
 
 The launcher follows the Muon evaluation environment: it sources Conda from
 `/mnt/data/jiangjiahao/miniconda3` when available and activates
