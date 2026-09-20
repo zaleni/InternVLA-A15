@@ -125,6 +125,14 @@ print(f"Selected 350 episodes / {frames:,} frames", file=sys.stderr)
 print(roster)
 PY
 )"
+# Grace period for shared-FS close-to-open visibility: the roster python just
+# published this file via os.replace; an immediate open can race on slow NFS.
+ROSTER_OK=0
+for _ in 1 2 3 4 5; do
+    if [[ -s "${ROSTER_PATH}" ]]; then ROSTER_OK=1; break; fi
+    sleep 2
+done
+(( ROSTER_OK )) || { echo "Roster was not published: ${ROSTER_PATH}" >&2; exit 1; }
 mapfile -t DATASET_REPO_IDS < "${ROSTER_PATH}"
 STATS_PATH="${ASSET_DIR}/$(basename "${ROSTER_PATH}" .txt)_delta_chunk50_stride2_stats.json"
 for required in "${BASE_CHECKPOINT}/model.safetensors" "${BASE_CHECKPOINT}/config.json" "${TOKENIZER_PATH}/tokenizer.json"; do
