@@ -46,6 +46,11 @@ def parse_args():
         help="One or more LeRobotDataset repo ids (must share the same robot_type and feature schema).",
     )
     p.add_argument(
+        "--action_stride", type=int, default=1,
+        help="Spacing between action queries; use 2 for this repository's pi05 policy.",
+    )
+    p.add_argument("--output_path", type=str, default=None, help="Optional exact stats JSON path.")
+    p.add_argument(
         "--root",
         type=str,
         default=None,
@@ -198,6 +203,7 @@ def _compute_one_repo(
     action_mode: str,
     chunk_size: int,
     repo_root: str | None,
+    action_stride: int = 1,
 ) -> dict:
     """Worker: compute stats for one repo, return serializable payload."""
     torch.backends.cudnn.benchmark = True
@@ -234,12 +240,13 @@ def _compute_one_repo(
     from_ids = np.asarray(dataset.meta.episodes["dataset_from_index"])
     to_ids = np.asarray(dataset.meta.episodes["dataset_to_index"])
     total_episodes = dataset.num_episodes
+    horizon = (chunk_size - 1) * action_stride + 1
 
     for from_idx, to_idx in zip(from_ids, to_ids):
         ep_len = int(to_idx - from_idx)
         total_frames += ep_len
 
-        if ep_len < chunk_size:
+        if ep_len < horizon:
             skipped_episodes += 1
             continue
 
@@ -260,8 +267,9 @@ def _compute_one_repo(
             state = [s if s.ndim > 1 else s[:, None] for s in state]
             state = torch.cat(state, dim=-1)
 
-            truncated_state = state[0 : (ep_len - chunk_size + 1)]
-            action_chunk = action.unfold(dimension=0, size=chunk_size, step=1).permute(0, 2, 1)
+            truncated_state = state[0 : (ep_len - horizon + 1)]
+            action_chunk = action.unfold(dimension=0, size=horizon, step=1).permute(0, 2, 1)
+            action_chunk = action_chunk[:, ::action_stride]
             delta_action = action_chunk - torch.where(mask, truncated_state, 0)[:, None]
 
             sid, eid = 0, 0
@@ -417,6 +425,9 @@ def compute_norm_stats_multi(cfg):
     repo_ids = cfg.repo_ids
     action_mode = cfg.action_mode
     chunk_size = cfg.chunk_size
+    action_stride = getattr(cfg, "action_stride", 1)
+    if chunk_size < 1 or action_stride < 1:
+        raise ValueError("chunk_size and action_stride must be positive")
     group_name = (
         _validate_stats_name(cfg.stats_name)
         if cfg.stats_name is not None
@@ -437,7 +448,7 @@ def compute_norm_stats_multi(cfg):
                 pool.starmap(
                     _compute_one_repo,
                     [
-                        (rid, action_mode, chunk_size, repo_root)
+                        (rid, action_mode, chunk_size, repo_root, action_stride)
                         for rid, repo_root in zip(repo_ids, repo_roots, strict=True)
                     ],
                 ),
@@ -508,17 +519,19 @@ def compute_norm_stats_multi(cfg):
         / robot_type
         / group_name
     )
-    output_dir.mkdir(parents=True, exist_ok=True)
-    write_json(output_dict, output_dir / "stats.json")
+    output_path = Path(cfg.output_path) if getattr(cfg, "output_path", None) else output_dir / "stats.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(output_dict, output_path)
 
     print("---------- done ----------")
     print(f"robot_type: {robot_type}")
     print(f"action_mode: {action_mode}")
     print(f"chunk_size: {chunk_size}")
+    print(f"action_stride: {action_stride}")
     print(f"stats_name: {group_name}")
-    print(f"output: {output_dir / 'stats.json'}")
+    print(f"output: {output_path}")
     print(f"total_frames (sum of episode lengths): {total_frames}")
-    print(f"total_episodes: {total_episodes} (skipped: {skipped_episodes} episodes with len < chunk_size)")
+    print(f"total_episodes: {total_episodes} (skipped: {skipped_episodes} episodes shorter than the action horizon)")
 
 
 if __name__ == "__main__":

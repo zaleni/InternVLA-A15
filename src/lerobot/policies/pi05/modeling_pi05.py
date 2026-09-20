@@ -327,6 +327,7 @@ class PaliGemmaWithExpertModel(
         image_size: int = DEFAULT_IMAGE_SIZE,
         freeze_vision_encoder: bool = False,
         train_expert_only: bool = False,
+        load_paligemma_weights: bool = True,
     ):
         if use_adarms is None:
             use_adarms = [False, False]
@@ -368,12 +369,16 @@ class PaliGemmaWithExpertModel(
             adarms_cond_dim=action_expert_config.width if use_adarms[1] else None,
         )
 
-        # self.paligemma = PaliGemmaForConditionalGeneration(config=vlm_config_hf)
-        self.paligemma = PaliGemmaForConditionalGeneration.from_pretrained(
-            "google/paligemma-3b-pt-224", 
-            config=vlm_config_hf, 
-            ignore_mismatched_sizes=True
-        )
+        if load_paligemma_weights:
+            self.paligemma = PaliGemmaForConditionalGeneration.from_pretrained(
+                "google/paligemma-3b-pt-224",
+                config=vlm_config_hf,
+                ignore_mismatched_sizes=True,
+            )
+        else:
+            # A complete pi05 checkpoint supplies this backbone too. Avoid a
+            # redundant gated Hub download during offline finetuning.
+            self.paligemma = PaliGemmaForConditionalGeneration(config=vlm_config_hf)
         self.gemma_expert = GemmaForCausalLM(config=action_expert_config_hf)
         self.gemma_expert.model.embed_tokens = None
 
@@ -420,7 +425,11 @@ class PaliGemmaWithExpertModel(
             self.paligemma.eval()
 
     def embed_image(self, image: torch.Tensor):
-        return self.paligemma.model.get_image_features(image)
+        outputs = self.paligemma.model.get_image_features(image)
+        # Transformers 5 returns a model output and pre-divides projected
+        # features for PaliGemma.forward. We bypass that forward and need the
+        # unscaled projected tensor for the joint vision/language prefix.
+        return outputs.pooler_output * math.sqrt(self.paligemma.config.text_config.hidden_size)
 
     def embed_language_tokens(self, tokens: torch.Tensor):
         return self.paligemma.language_model.embed_tokens(tokens)
@@ -527,7 +536,7 @@ class PaliGemmaWithExpertModel(
 class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
     """Core PI05 PyTorch model."""
 
-    def __init__(self, config: PI05Config):
+    def __init__(self, config: PI05Config, load_paligemma_weights: bool = True):
         super().__init__()
         self.config = config
 
@@ -547,6 +556,7 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
             image_size=config.image_resolution[0],
             freeze_vision_encoder=config.freeze_vision_encoder,
             train_expert_only=config.train_expert_only,
+            load_paligemma_weights=load_paligemma_weights,
         )
 
         self.action_in_proj = nn.Linear(config.max_action_dim, action_expert_config.width)
@@ -885,6 +895,7 @@ class PI05Policy(PreTrainedPolicy):
     def __init__(
         self,
         config: PI05Config,
+        load_paligemma_weights: bool = True,
         **kwargs,
     ):
         """
@@ -896,7 +907,7 @@ class PI05Policy(PreTrainedPolicy):
         self.config = config
 
         # Initialize the core PI05 model
-        self.model = PI05Pytorch(config)
+        self.model = PI05Pytorch(config, load_paligemma_weights=load_paligemma_weights)
 
         # Enable gradient checkpointing if requested
         if config.gradient_checkpointing:
@@ -977,7 +988,7 @@ class PI05Policy(PreTrainedPolicy):
 
         # Initialize model without loading weights
         # Check if dataset_stats were provided in kwargs
-        model = cls(config, **kwargs)
+        model = cls(config, load_paligemma_weights=False, **kwargs)
 
         # Now manually load and remap the state dict
         try:
@@ -990,22 +1001,20 @@ class PI05Policy(PreTrainedPolicy):
                 resolved_file = cached_file(
                     pretrained_name_or_path,
                     "model.safetensors",
-                    cache_dir=kwargs.get("cache_dir"),
-                    force_download=kwargs.get("force_download", False),
-                    resume_download=kwargs.get("resume_download"),
-                    proxies=kwargs.get("proxies"),
-                    use_auth_token=kwargs.get("use_auth_token"),
-                    revision=kwargs.get("revision"),
-                    local_files_only=kwargs.get("local_files_only", False),
+                    cache_dir=cache_dir,
+                    force_download=force_download,
+                    resume_download=resume_download,
+                    proxies=proxies,
+                    token=token,
+                    revision=revision,
+                    local_files_only=local_files_only,
                 )
                 from safetensors.torch import load_file
 
                 original_state_dict = load_file(resolved_file)
                 print("✓ Loaded state dict from model.safetensors")
             except Exception as e:
-                print(f"Could not load state dict from remote files: {e}")
-                print("Returning model without loading pretrained weights")
-                return model
+                raise RuntimeError(f"Could not load pi05 checkpoint: {pretrained_name_or_path}") from e
 
             # First, fix any key differences # see openpi `model.py, _fix_pytorch_state_dict_keys`
             fixed_state_dict = model._fix_pytorch_state_dict_keys(original_state_dict, model.config)
@@ -1063,7 +1072,7 @@ class PI05Policy(PreTrainedPolicy):
                 print("All keys loaded successfully!")
 
         except Exception as e:
-            print(f"Warning: Could not remap state dict keys: {e}")
+            raise RuntimeError(f"Could not load complete pi05 weights: {pretrained_name_or_path}") from e
 
         return model
 

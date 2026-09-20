@@ -14,7 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+import logging
 
 from lerobot.configs.default import DatasetConfig
 from lerobot.configs.policies import PreTrainedConfig
@@ -22,7 +23,11 @@ from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
 from lerobot.optim.optimizers import AdamWConfig
 from lerobot.optim.schedulers import CosineDecayWithWarmupSchedulerConfig
 from lerobot.utils.constants import ACTION, OBS_IMAGES, OBS_STATE
-from lerobot.policies.pi05.transform_pi05 import PI05GemmaTokenizerTransformFn, UnifyPI05InputsTransformFn
+from lerobot.policies.pi05.transform_pi05 import (
+    LoadTaskAugTransformFn,
+    PI05GemmaTokenizerTransformFn,
+    UnifyPI05InputsTransformFn,
+)
 from lerobot.transforms.core import *
 
 DEFAULT_IMAGE_SIZE = 224
@@ -35,6 +40,7 @@ class PI05DatasetConfig(DatasetConfig):
     width: int = 224
     max_state_dim: int = 32
     max_action_dim: int = 32
+    pi05_tokenizer_path: str = "google/paligemma-3b-pt-224"
 
     # required: ✅, optional: ➕
     data_transforms: TransformGroup = field(
@@ -64,6 +70,12 @@ class PI05DatasetConfig(DatasetConfig):
     def __post_init__(self):
         super().__post_init__()
         inputs = list(self.data_transforms.inputs)
+        inputs = [
+            replace(t, pretrained_model_name_or_path=self.pi05_tokenizer_path)
+            if isinstance(t, PI05GemmaTokenizerTransformFn) else t
+            for t in inputs
+        ]
+        self.data_transforms = replace(self.data_transforms, inputs=inputs)
         has_delta = any(isinstance(t, DeltaActionTransformFn) for t in inputs)
         if self.action_mode == "delta":
             if not has_delta:  # add DeltaActionTransformFn

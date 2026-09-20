@@ -1,6 +1,9 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
+import json
+import random
+from pathlib import Path
 
 from transformers import AutoTokenizer
 
@@ -16,6 +19,26 @@ from lerobot.utils.constants import (
 )
 from lerobot.transforms.core import DataTransformFn, DataDict
 import torch.nn.functional as F
+
+
+@DataTransformFn.register_subclass("pi05_task_augmentation")
+@dataclass
+class LoadTaskAugTransformFn(DataTransformFn):
+    """Optional instruction paraphrases; preserve the dataset task if absent."""
+
+    _instructions: list[str] = field(default_factory=list, init=False, repr=False)
+
+    def hydrate(self, dataset):
+        transform = type(self)()
+        path = Path(dataset.root) / "meta" / "instruction_augmentations.json"
+        if path.is_file():
+            transform._instructions = json.loads(path.read_text())["instructions"]
+        return transform
+
+    def __call__(self, data: DataDict) -> DataDict:
+        if self._instructions:
+            data["task"] = random.choice(self._instructions)
+        return data
 
 def pad_vector(vector, new_dim):
     """Pad the last dimension of a vector to new_dim with zeros.
@@ -42,13 +65,15 @@ class PI05GemmaTokenizerTransformFn(DataTransformFn):
     padding: str = "max_length"
     truncation: bool = True
 
-    # tokenizer: Any = field(default=None, init=False, repr=False)
+    tokenizer: Any = field(default=None, init=False, repr=False)
 
     def __post_init__(self):
-        self.tokenizer = AutoTokenizer.from_pretrained(self.pretrained_model_name_or_path)
+        # Config parsing must finish before resolving the configured local path.
+        self.tokenizer = None
 
     def __call__(self, data: DataDict) -> DataDict: 
-
+        if self.tokenizer is None:
+            self.tokenizer = AutoTokenizer.from_pretrained(self.pretrained_model_name_or_path)
         state = data[OBS_STATE]
         state = deepcopy(state)
         # Prepare state (pad to max_state_dim)
@@ -100,5 +125,4 @@ class UnifyPI05InputsTransformFn(DataTransformFn):
             OBS_LANGUAGE_ATTENTION_MASK: data[OBS_LANGUAGE_ATTENTION_MASK], 
         }
         return data
-
 
