@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 350 selected AC One demonstrations; 2 nodes x 8 GPUs, 30,000 optimizer steps.
+# 350 selected AC One demonstrations; 2 or 4 nodes x 8 GPUs, 30,000 optimizer steps.
 # Prepare once: bash launch/pi05_finetune_acone_liquid350.sh --prepare-only
-# SenseCore: submit this same shell command ONCE PER NODE (2 nodes, 8 GPUs each).
+# SenseCore: submit this same shell command ONCE PER NODE (8 GPUs per node).
 # The platform supplies SENSECORE_* or node-level WORLD_SIZE/RANK and MASTER_*.
-# Manual launch: set NODE_RANK=0/1, MASTER_ADDR=<node0-ip>, MASTER_PORT=29545.
+# Manual launch: set NODE_RANK=<0..N-1>, MASTER_ADDR=<node0-ip>, MASTER_PORT=29545.
 # --dry-run validates the roster/assets and prints the command without training.
 MODE="${1:-train}"
 case "${MODE}" in train|--prepare-only|--dry-run) ;; *) echo "Usage: $0 [--prepare-only|--dry-run]" >&2; exit 2 ;; esac
@@ -18,11 +18,11 @@ cd "${PROJ_ROOT}"
 # WORLD_SIZE/RANK are the node-level fallback used by the existing SenseCore
 # acone launcher, NOT the 16-worker environment produced by accelerate.
 PROC_PER_NODE="${PROC_PER_NODE:-${SENSECORE_ACCELERATE_DEVICE_COUNT:-8}}"
-NODE_COUNT="${NODE_COUNT:-${SENSECORE_PYTORCH_NNODES:-${WORLD_SIZE:-2}}}"
+NODE_COUNT="${NODE_COUNT:-${SENSECORE_PYTORCH_NNODES:-${WORLD_SIZE:-4}}}"
 NODE_RANK="${NODE_RANK:-${SENSECORE_PYTORCH_NODE_RANK:-${RANK:-}}}"
 MASTER_ADDR="${MASTER_ADDR:-}"
 MASTER_PORT="${MASTER_PORT:-}"
-BATCH_SIZE="${BATCH_SIZE:-16}"
+BATCH_SIZE="${BATCH_SIZE:-8}"
 STEPS=30000
 if [[ "${MODE}" != --prepare-only ]]; then
     if [[ -n "${LOCAL_RANK:-}" ]]; then
@@ -33,8 +33,8 @@ if [[ "${MODE}" != --prepare-only ]]; then
         value="${!value_name}"
         [[ "${value}" =~ ^(0|[1-9][0-9]*)$ ]] || { echo "${value_name} is missing or not a nonnegative integer: '${value}'" >&2; exit 2; }
     done
-    [[ "${NODE_COUNT}" == 2 && "${PROC_PER_NODE}" == 8 ]] || {
-        echo "This recipe requires 2 nodes x 8 GPUs. NODE_COUNT=${NODE_COUNT}, PROC_PER_NODE=${PROC_PER_NODE}; WORLD_SIZE fallback must be node count, not worker count." >&2
+    [[ ( "${NODE_COUNT}" == 2 || "${NODE_COUNT}" == 4 ) && "${PROC_PER_NODE}" == 8 ]] || {
+        echo "This recipe requires 2 or 4 nodes x 8 GPUs. NODE_COUNT=${NODE_COUNT}, PROC_PER_NODE=${PROC_PER_NODE}; WORLD_SIZE fallback must be node count, not worker count." >&2
         exit 2
     }
     (( NODE_RANK < NODE_COUNT && MASTER_PORT > 0 && MASTER_PORT <= 65535 && BATCH_SIZE > 0 )) || {
@@ -49,7 +49,7 @@ NUM_PROCESSES=$((NODE_COUNT * PROC_PER_NODE))
 # same output path. Never generate separate wall-clock timestamps per node.
 RUN_ID="${RUN_ID:-${SENSECORE_JOB_NAME:-${MASTER_ADDR:-prepare}-${MASTER_PORT:-none}}}"
 SAFE_RUN_ID="${RUN_ID//[^a-zA-Z0-9._-]/_}"
-JOB_NAME="${JOB_NAME:-${SAFE_RUN_ID}-pi05-acone-liquid350-2x8-30k}"
+JOB_NAME="${JOB_NAME:-${SAFE_RUN_ID}-pi05-acone-liquid350-${NODE_COUNT}x${PROC_PER_NODE}-30k}"
 [[ "${JOB_NAME}" =~ ^[a-zA-Z0-9._-]+$ && "${JOB_NAME}" != . && "${JOB_NAME}" != .. ]] || { echo "JOB_NAME must be a filename-safe run name." >&2; exit 2; }
 OUTPUT_DIR="${OUTPUT_DIR:-${PROJ_ROOT}/outputs/pi05/acone_liquid350/${JOB_NAME}}"
 TASK_LOG_DIR="${TASK_LOG_DIR:-${PROJ_ROOT}/outputs/pi05/acone_liquid350/logs}"
@@ -186,7 +186,7 @@ ARGS=(
     --log_freq=100 --eval_freq=0 --use_policy_training_preset=true
     --wandb.enable="${WANDB_ENABLE:-true}" --wandb.project=pi05_acone --wandb.mode=offline
 )
-echo "2 nodes x 8 GPUs; batch/GPU=${BATCH_SIZE}; global batch=$((16 * BATCH_SIZE)); steps=${STEPS}"
+echo "${NODE_COUNT} nodes x ${PROC_PER_NODE} GPUs; batch/GPU=${BATCH_SIZE}; global batch=$((NUM_PROCESSES * BATCH_SIZE)); steps=${STEPS}"
 echo "Output: ${OUTPUT_DIR}"
 if [[ "${MODE}" == --dry-run ]]; then
     printf '%q ' accelerate launch "${ARGS[@]}"

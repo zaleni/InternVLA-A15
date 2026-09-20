@@ -425,11 +425,11 @@ class PaliGemmaWithExpertModel(
             self.paligemma.eval()
 
     def embed_image(self, image: torch.Tensor):
-        outputs = self.paligemma.model.get_image_features(image)
-        # Transformers 5 returns a model output and pre-divides projected
-        # features for PaliGemma.forward. We bypass that forward and need the
-        # unscaled projected tensor for the joint vision/language prefix.
-        return outputs.pooler_output * math.sqrt(self.paligemma.config.text_config.hidden_size)
+        # Match lerobot_lab exactly: return the raw model output; the caller
+        # (image_embed_func) extracts .pooler_output, which the replaced
+        # PaliGemmaModel.get_image_features pre-divides by sqrt(hidden_size).
+        # Keeping this convention makes checkpoints deployable in lerobot_lab.
+        return self.paligemma.model.get_image_features(image)
 
     def embed_language_tokens(self, tokens: torch.Tensor):
         return self.paligemma.language_model.embed_tokens(tokens)
